@@ -31,9 +31,9 @@ pub(crate) struct Flusher {
 
 impl Flusher {
     /// Spawns a thread that periodically calls `callback` until dropped.
-    pub(crate) fn new(
+    pub(crate) fn new<C: ConstConfig>(
         name: String,
-        pagecache: PageCache,
+        pagecache: PageCache<C>,
         flush_every_ms: u64,
     ) -> Self {
         #[allow(clippy::mutex_atomic)] // mutex used in CondVar below
@@ -53,10 +53,10 @@ impl Flusher {
     }
 }
 
-fn run(
+fn run<C: ConstConfig>(
     shutdown_mu: &Arc<Mutex<ShutdownState>>,
     sc: &Arc<Condvar>,
-    pagecache: &PageCache,
+    pagecache: &PageCache<C>,
     flush_every_ms: u64,
 ) {
     let flush_every = Duration::from_millis(flush_every_ms);

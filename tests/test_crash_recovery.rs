@@ -13,6 +13,7 @@ use rand::Rng;
 use sled::Config;
 
 use common::cleanup;
+use sled::ConstConfig;
 
 const TEST_ENV_VAR: &str = "SLED_CRASH_TEST";
 const N_TESTS: usize = 100;
@@ -105,7 +106,7 @@ fn main() {
 /// Verifies that the keys in the tree are correctly recovered.
 /// Panics if they are incorrect.
 /// Returns the key that should be resumed at, and the current cycle value.
-fn verify(tree: &sled::Tree) -> (u32, u32) {
+fn verify<C: ConstConfig>(tree: &sled::Tree<C>) -> (u32, u32) {
     // key 0 should always be the highest value, as that's where we increment
     // at some point, it might go down by one
     // it should never return, or go down again after that
@@ -179,7 +180,7 @@ fn spawn_killah() {
     });
 }
 
-fn run_inner(config: Config) {
+fn run_inner<C: ConstConfig>(config: Config<C>) {
     let crash_during_initialization = rand::thread_rng().gen_bool(0.1);
 
     if crash_during_initialization {
@@ -217,7 +218,7 @@ fn run_inner(config: Config) {
 
 /// Verifies that the keys in the tree are correctly recovered (i.e., equal).
 /// Panics if they are incorrect.
-fn verify_batches(tree: &sled::Tree) -> u32 {
+fn verify_batches<C: ConstConfig>(tree: &sled::Tree<C>) -> u32 {
     let mut iter = tree.iter();
     let first_value = match iter.next() {
         Some(Ok((_k, v))) => slice_to_u32(&*v),
@@ -247,8 +248,8 @@ fn verify_batches(tree: &sled::Tree) -> u32 {
     first_value
 }
 
-fn run_batches_inner(db: sled::Db) {
-    fn do_batch(i: u32, db: &sled::Db) {
+fn run_batches_inner<C: ConstConfig>(db: sled::Db<C>) {
+    fn do_batch<C: ConstConfig>(i: u32, db: &sled::Db<C>) {
         let mut rng = rand::thread_rng();
         let base_value = u32_to_vec(i);
 
@@ -280,11 +281,12 @@ fn run_batches_inner(db: sled::Db) {
 }
 
 fn run_crash_recovery() {
-    let config = Config::new()
+    let config = <Config>::builder()
         .cache_capacity(128 * 1024 * 1024)
         .flush_every_ms(Some(1))
         .path(RECOVERY_DIR)
-        .segment_size(SEGMENT_SIZE);
+        .segment_size::<SEGMENT_SIZE>()
+        .build();
 
     if let Err(e) = thread::spawn(|| run_inner(config)).join() {
         println!("worker thread failed: {:?}", e);
@@ -299,11 +301,12 @@ fn run_crash_batches() {
         spawn_killah();
     }
 
-    let config = Config::new()
+    let config = <Config>::builder()
         .cache_capacity(128 * 1024 * 1024)
         .flush_every_ms(Some(1))
         .path(BATCHES_DIR)
-        .segment_size(SEGMENT_SIZE);
+        .segment_size::<SEGMENT_SIZE>()
+        .build();
 
     let db = config.open().unwrap();
     // let db2 = db.clone();
@@ -424,7 +427,8 @@ fn run_crash_iter() {
     const N_FORWARD: usize = 50;
     const N_REVERSE: usize = 50;
 
-    let config = Config::new().path(ITER_DIR).flush_every_ms(Some(1));
+    let config =
+        <Config>::builder().path(ITER_DIR).flush_every_ms(Some(1)).build();
 
     let t = config.open().unwrap();
     t.verify_integrity().unwrap();
@@ -586,7 +590,8 @@ fn run_crash_iter() {
 fn run_crash_tx() {
     common::setup_logger();
 
-    let config = Config::new().flush_every_ms(Some(1)).path(TX_DIR);
+    let config =
+        <Config>::builder().flush_every_ms(Some(1)).path(TX_DIR).build();
     let db = config.open().unwrap();
     db.verify_integrity().unwrap();
 

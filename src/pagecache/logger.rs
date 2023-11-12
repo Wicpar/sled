@@ -8,6 +8,8 @@ use super::{
     MAX_MSG_HEADER_LEN, META_PID, SEG_HEADER_LEN,
 };
 
+use crate::config::const_config::ConstConfig;
+use crate::pagecache::iobuf::AlignedSegment;
 use crate::*;
 
 /// A sequential store which allows users to create
@@ -15,16 +17,19 @@ use crate::*;
 /// for writing persistent data structures that need
 /// to know where to find persisted bits in the future.
 #[derive(Debug)]
-pub struct Log {
+pub struct Log<C: ConstConfig> {
     /// iobufs is the underlying lock-free IO write buffer.
-    pub(crate) iobufs: Arc<IoBufs>,
-    pub(crate) config: RunningConfig,
+    pub(crate) iobufs: Arc<IoBufs<C>>,
+    pub(crate) config: RunningConfig<C>,
 }
 
-impl Log {
+impl<C: ConstConfig> Log<C> {
     /// Start the log, open or create the configured file,
     /// and optionally start the periodic buffer flush thread.
-    pub fn start(config: RunningConfig, snapshot: &Snapshot) -> Result<Self> {
+    pub fn start(
+        config: RunningConfig<C>,
+        snapshot: &Snapshot,
+    ) -> Result<Self> {
         let iobufs = Arc::new(IoBufs::start(config.clone(), snapshot)?);
 
         Ok(Self { iobufs, config })
@@ -38,7 +43,7 @@ impl Log {
 
     /// Return an iterator over the log, starting with
     /// a specified offset.
-    pub fn iter_from(&self, lsn: Lsn) -> super::LogIter {
+    pub fn iter_from(&self, lsn: Lsn) -> super::LogIter<C> {
         self.iobufs.iter_from(lsn)
     }
 
@@ -52,7 +57,7 @@ impl Log {
 
         let expected_segment_number = SegmentNumber(
             u64::try_from(lsn).unwrap()
-                / u64::try_from(self.config.segment_size).unwrap(),
+                / u64::try_from(C::Segment::SIZE).unwrap(),
         );
 
         iobuf::make_durable(&self.iobufs, lsn)?;
@@ -106,7 +111,7 @@ impl Log {
         pid: PageId,
         heap_pointer: HeapId,
         guard: &Guard,
-    ) -> Result<Reservation<'_>> {
+    ) -> Result<Reservation<'_, C>> {
         let ret = self.reserve_inner(
             LogKind::Replace,
             pid,
@@ -133,7 +138,7 @@ impl Log {
         pid: PageId,
         item: &T,
         guard: &Guard,
-    ) -> Result<Reservation<'_>> {
+    ) -> Result<Reservation<'_, C>> {
         let ret = self.reserve_inner(log_kind, pid, item, None, guard);
 
         if let Err(e) = &ret {
@@ -150,7 +155,7 @@ impl Log {
         item: &T,
         heap_rewrite: Option<HeapId>,
         _: &Guard,
-    ) -> Result<Reservation<'_>> {
+    ) -> Result<Reservation<'_, C>> {
         #[cfg(feature = "metrics")]
         let _measure = Measure::new(&M.reserve_lat);
 
@@ -163,7 +168,7 @@ impl Log {
 
         let max_buf_size = usize::try_from(super::heap::MIN_SZ * 15 / 16)
             .unwrap()
-            .min(self.config.segment_size - SEG_HEADER_LEN);
+            .min(C::Segment::SIZE - SEG_HEADER_LEN);
 
         let over_heap_threshold =
             max_buf_len > u64::try_from(max_buf_size).unwrap();
@@ -277,7 +282,7 @@ impl Log {
                 kind,
                 segment_number: SegmentNumber(
                     u64::try_from(iobuf.lsn).unwrap()
-                        / u64::try_from(self.config.segment_size).unwrap(),
+                        / u64::try_from(C::Segment::SIZE).unwrap(),
                 ),
                 pid,
                 len: if over_heap_threshold {
@@ -435,7 +440,10 @@ impl Log {
     /// Called by Reservation on termination (completion or abort).
     /// Handles departure from shared state, and possibly writing
     /// the buffer to stable storage if necessary.
-    pub(super) fn exit_reservation(&self, iobuf: &Arc<IoBuf>) -> Result<()> {
+    pub(super) fn exit_reservation(
+        &self,
+        iobuf: &Arc<IoBuf<C::Segment>>,
+    ) -> Result<()> {
         let mut header = iobuf.get_header();
 
         // Decrement writer count, retrying until successful.
@@ -482,7 +490,7 @@ impl Log {
     }
 }
 
-impl Drop for Log {
+impl<C: ConstConfig> Drop for Log<C> {
     fn drop(&mut self) {
         // don't do any more IO if we're crashing
         if self.config.global_error().is_err() {
@@ -718,15 +726,15 @@ impl ReadAt for BasedBuf {
 }
 
 /// read a buffer from the disk
-pub(crate) fn read_message<R: ReadAt>(
+pub(crate) fn read_message<R: ReadAt, C: ConstConfig>(
     file: &R,
     lid: LogOffset,
     expected_segment_number: SegmentNumber,
-    config: &RunningConfig,
+    config: &RunningConfig<C>,
 ) -> Result<LogRead> {
     #[cfg(feature = "metrics")]
     let _measure = Measure::new(&M.read);
-    let segment_len = config.segment_size;
+    let segment_len = C::Segment::SIZE;
     let seg_start = lid / segment_len as LogOffset * segment_len as LogOffset;
     trace!("reading message from segment: {} at lid: {}", seg_start, lid);
     assert!(seg_start + SEG_HEADER_LEN as LogOffset <= lid);

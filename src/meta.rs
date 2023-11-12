@@ -1,3 +1,4 @@
+use crate::config::const_config::ConstConfig;
 use crate::*;
 
 /// A simple map that can be used to store metadata
@@ -30,11 +31,11 @@ impl Meta {
 
 /// Open or create a new disk-backed Tree with its own keyspace,
 /// accessible from the `Db` via the provided identifier.
-pub(crate) fn open_tree<V>(
-    context: &Context,
+pub(crate) fn open_tree<V, C: ConstConfig>(
+    context: &Context<C>,
     raw_name: V,
     guard: &Guard,
-) -> Result<Tree>
+) -> Result<Tree<C>>
 where
     V: Into<IVec>,
 {

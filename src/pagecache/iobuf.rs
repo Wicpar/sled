@@ -1,10 +1,9 @@
-use std::{
-    alloc::{alloc, dealloc, Layout},
-    cell::UnsafeCell,
-    sync::atomic::AtomicPtr,
-};
+use std::mem::{align_of, size_of, MaybeUninit};
+use std::ops::DerefMut;
+use std::{cell::UnsafeCell, sync::atomic::AtomicPtr};
 
-use crate::{pagecache::*, *};
+use crate::config::const_config::ConstConfig;
+use crate::pagecache::*;
 
 macro_rules! io_fail {
     ($self:expr, $e:expr) => {
@@ -19,30 +18,49 @@ macro_rules! io_fail {
     };
 }
 
-struct AlignedBuf(*mut u8, usize);
+pub trait AlignedSegment:
+    Sized + DerefMut<Target = [u8]> + Clone + Debug + Send + Sync + 'static
+{
+    const SIZE: usize = size_of::<Self>();
+    const ALIGN: usize = align_of::<Self>();
 
-impl AlignedBuf {
-    fn new(len: usize) -> AlignedBuf {
-        let layout = Layout::from_size_align(len, 8192).unwrap();
-        let ptr = unsafe { alloc(layout) };
+    fn new_zeroed() -> Self {
+        Self::new_fill(0)
+    }
+    fn new_fill(value: u8) -> Self;
+    fn new_uninit() -> Self;
+}
 
-        assert!(!ptr.is_null(), "failed to allocate critical IO buffer");
+#[derive(Clone, Debug)]
+#[repr(C, align(8192))]
+pub struct AlignedBuf<const N: usize>([u8; N]);
 
-        AlignedBuf(ptr, len)
+impl<const N: usize> Deref for AlignedBuf<N> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-impl Drop for AlignedBuf {
-    fn drop(&mut self) {
-        let layout = Layout::from_size_align(self.1, 8192).unwrap();
-        unsafe {
-            dealloc(self.0, layout);
-        }
+impl<const N: usize> DerefMut for AlignedBuf<N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
-pub(crate) struct IoBuf {
-    buf: Arc<UnsafeCell<AlignedBuf>>,
+impl<const N: usize> AlignedSegment for AlignedBuf<N> {
+    fn new_fill(value: u8) -> Self {
+        Self([(); N].map(|_| value))
+    }
+
+    fn new_uninit() -> Self {
+        Self(unsafe { MaybeUninit::uninit().assume_init() })
+    }
+}
+
+pub(crate) struct IoBuf<S> {
+    buf: Arc<UnsafeCell<S>>,
     header: CachePadded<AtomicU64>,
     base: usize,
     pub offset: LogOffset,
@@ -53,12 +71,12 @@ pub(crate) struct IoBuf {
 }
 
 #[allow(unsafe_code)]
-unsafe impl Sync for IoBuf {}
+unsafe impl<S> Sync for IoBuf<S> where S: Sync {}
 
 #[allow(unsafe_code)]
-unsafe impl Send for IoBuf {}
+unsafe impl<S> Send for IoBuf<S> where S: Send {}
 
-impl IoBuf {
+impl<S: AlignedSegment> IoBuf<S> {
     /// # Safety
     ///
     /// This operation provides access to a mutable buffer of
@@ -81,20 +99,13 @@ impl IoBuf {
     /// to meet this requirement.
     ///
     /// The safety of this method was discussed in #1044.
+    #[inline(always)]
     pub(crate) fn get_mut_range(
         &self,
         at: usize,
         len: usize,
     ) -> &'static mut [u8] {
-        let buf_ptr = self.buf.get();
-
-        unsafe {
-            assert!((*buf_ptr).1 >= at + len);
-            std::slice::from_raw_parts_mut(
-                (*buf_ptr).0.add(self.base + at),
-                len,
-            )
-        }
+        &mut unsafe { self.buf.get().as_mut() }.unwrap()[at..at + len]
     }
 
     // This is called upon the initialization of a fresh segment.
@@ -117,15 +128,7 @@ impl IoBuf {
         let header = SegmentHeader { lsn, max_stable_lsn, ok: true };
         let header_bytes: [u8; SEG_HEADER_LEN] = header.into();
 
-        #[allow(unsafe_code)]
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                header_bytes.as_ptr(),
-                (*self.buf.get()).0,
-                SEG_HEADER_LEN,
-            );
-        }
-
+        self.get_mut_range(0, SEG_HEADER_LEN).copy_from_slice(&header_bytes);
         // ensure writes to the buffer land after our header.
         let last_salt = header::salt(last);
         let new_salt = header::bump_salt(last_salt);
@@ -276,8 +279,8 @@ impl StabilityIntervals {
     }
 }
 
-pub(crate) struct IoBufs {
-    pub config: RunningConfig,
+pub(crate) struct IoBufs<C: ConstConfig> {
+    pub config: RunningConfig<C>,
 
     // A pointer to the current IoBuf. This relies on crossbeam-epoch
     // for garbage collection when it gets swapped out, to ensure that
@@ -285,7 +288,7 @@ pub(crate) struct IoBufs {
     // mutated from the maybe_seal_and_write_iobuf method.
     // finally dropped in the Drop impl, without using crossbeam-epoch,
     // because if this drops, all witnessing threads should be done.
-    pub iobuf: AtomicPtr<IoBuf>,
+    pub iobuf: AtomicPtr<IoBuf<C::Segment>>,
 
     // Pending intervals that have been written to stable storage, but may be
     // higher than the current value of `stable` due to interesting thread
@@ -300,12 +303,12 @@ pub(crate) struct IoBufs {
     pub stable_lsn: AtomicLsn,
     pub max_reserved_lsn: AtomicLsn,
     pub max_header_stable_lsn: Arc<AtomicLsn>,
-    pub segment_accountant: Mutex<SegmentAccountant>,
+    pub segment_accountant: Mutex<SegmentAccountant<C>>,
     pub segment_cleaner: SegmentCleaner,
     deferred_segment_ops: stack::Stack<SegmentOp>,
 }
 
-impl Drop for IoBufs {
+impl<C: ConstConfig> Drop for IoBufs<C> {
     fn drop(&mut self) {
         let ptr = self.iobuf.swap(std::ptr::null_mut(), SeqCst);
         assert!(!ptr.is_null());
@@ -317,21 +320,24 @@ impl Drop for IoBufs {
 
 /// `IoBufs` is a set of lock-free buffers for coordinating
 /// writes to underlying storage.
-impl IoBufs {
-    pub fn start(config: RunningConfig, snapshot: &Snapshot) -> Result<IoBufs> {
+impl<C: ConstConfig> IoBufs<C> {
+    pub fn start(
+        config: RunningConfig<C>,
+        snapshot: &Snapshot,
+    ) -> Result<IoBufs<C>> {
         let segment_cleaner = SegmentCleaner::default();
 
-        let mut segment_accountant: SegmentAccountant =
+        let mut segment_accountant: SegmentAccountant<C> =
             SegmentAccountant::start(
                 config.clone(),
                 snapshot,
                 segment_cleaner.clone(),
             )?;
 
-        let segment_size = config.segment_size;
+        let segment_size = C::Segment::SIZE;
 
         let (recovered_lid, recovered_lsn) =
-            snapshot.recovered_coords(config.segment_size);
+            snapshot.recovered_coords(C::Segment::SIZE);
 
         let (next_lid, next_lsn, from_tip) =
             match (recovered_lid, recovered_lsn) {
@@ -378,7 +384,7 @@ impl IoBufs {
         let base = assert_usize(next_lid % segment_size as LogOffset);
 
         let mut iobuf = IoBuf {
-            buf: Arc::new(UnsafeCell::new(AlignedBuf::new(segment_size))),
+            buf: Arc::new(UnsafeCell::new(C::Segment::new_uninit())),
             header: CachePadded::new(AtomicU64::new(0)),
             base,
             offset: next_lid,
@@ -395,7 +401,9 @@ impl IoBufs {
         Ok(IoBufs {
             config,
 
-            iobuf: AtomicPtr::new(Arc::into_raw(Arc::new(iobuf)) as *mut IoBuf),
+            iobuf: AtomicPtr::new(
+                Arc::into_raw(Arc::new(iobuf)) as *mut IoBuf<C::Segment>
+            ),
 
             intervals: Mutex::new(StabilityIntervals::new(stable)),
             interval_updated: Condvar::new(),
@@ -477,7 +485,7 @@ impl IoBufs {
     /// `SegmentAccountant` access for coordination with the `PageCache`
     pub(in crate::pagecache) fn try_with_sa<B, F>(&self, f: F) -> Option<B>
     where
-        F: FnOnce(&mut SegmentAccountant) -> B,
+        F: FnOnce(&mut SegmentAccountant<C>) -> B,
     {
         debug_delay();
         if let Some(mut sa) = self.segment_accountant.try_lock() {
@@ -500,7 +508,7 @@ impl IoBufs {
     /// `SegmentAccountant` access for coordination with the `PageCache`
     pub(in crate::pagecache) fn with_sa<B, F>(&self, f: F) -> B
     where
-        F: FnOnce(&mut SegmentAccountant) -> B,
+        F: FnOnce(&mut SegmentAccountant<C>) -> B,
     {
         #[cfg(feature = "metrics")]
         let start = clock();
@@ -526,7 +534,7 @@ impl IoBufs {
 
     /// Return an iterator over the log, starting with
     /// a specified offset.
-    pub(crate) fn iter_from(&self, lsn: Lsn) -> LogIter {
+    pub(crate) fn iter_from(&self, lsn: Lsn) -> LogIter<C> {
         trace!("iterating from lsn {}", lsn);
         let segments = self.with_sa(|sa| sa.segment_snapshot_iter_from(lsn));
 
@@ -621,7 +629,10 @@ impl IoBufs {
 
     // Write an IO buffer's data to stable storage and set up the
     // next IO buffer for writing.
-    pub(crate) fn write_to_log(&self, iobuf: Arc<IoBuf>) -> Result<()> {
+    pub(crate) fn write_to_log(
+        &self,
+        iobuf: Arc<IoBuf<C::Segment>>,
+    ) -> Result<()> {
         #[cfg(feature = "metrics")]
         let _measure = Measure::new(&M.write_to_log);
         let header = iobuf.get_header();
@@ -629,7 +640,7 @@ impl IoBufs {
         let base_lsn = iobuf.lsn;
         let capacity = iobuf.capacity;
 
-        let segment_size = self.config.segment_size;
+        let segment_size = C::Segment::SIZE;
 
         assert_eq!(
             Lsn::try_from(log_offset % segment_size as LogOffset).unwrap(),
@@ -665,7 +676,7 @@ impl IoBufs {
 
             let segment_number = SegmentNumber(
                 u64::try_from(base_lsn).unwrap()
-                    / u64::try_from(self.config.segment_size).unwrap(),
+                    / u64::try_from(C::Segment::SIZE).unwrap(),
             );
 
             let cap_header = MessageHeader {
@@ -865,7 +876,7 @@ impl IoBufs {
         let _notified = self.interval_updated.notify_all();
     }
 
-    pub(in crate::pagecache) fn current_iobuf(&self) -> Arc<IoBuf> {
+    pub(in crate::pagecache) fn current_iobuf(&self) -> Arc<IoBuf<C::Segment>> {
         // we bump up the ref count, and forget the arc to retain a +1.
         // If we didn't forget it, it would then go back down again,
         // even though we just created a new reference to it, leading
@@ -891,7 +902,9 @@ impl IoBufs {
     }
 }
 
-pub(crate) fn roll_iobuf(iobufs: &Arc<IoBufs>) -> Result<usize> {
+pub(crate) fn roll_iobuf<C: ConstConfig>(
+    iobufs: &Arc<IoBufs<C>>,
+) -> Result<usize> {
     let iobuf = iobufs.current_iobuf();
     let header = iobuf.get_header();
     if header::is_sealed(header) {
@@ -912,8 +925,8 @@ pub(crate) fn roll_iobuf(iobufs: &Arc<IoBufs>) -> Result<usize> {
 /// been made stable on disk. Returns the number of
 /// bytes written. Suitable as a full consistency
 /// barrier.
-pub(in crate::pagecache) fn make_stable(
-    iobufs: &Arc<IoBufs>,
+pub(in crate::pagecache) fn make_stable<C: ConstConfig>(
+    iobufs: &Arc<IoBufs<C>>,
     lsn: Lsn,
 ) -> Result<usize> {
     make_stable_inner(iobufs, lsn, false)
@@ -928,15 +941,15 @@ pub(in crate::pagecache) fn make_stable(
 /// so that the system can avoid a full barrier
 /// if the desired item has already been made
 /// durable.
-pub(in crate::pagecache) fn make_durable(
-    iobufs: &Arc<IoBufs>,
+pub(in crate::pagecache) fn make_durable<C: ConstConfig>(
+    iobufs: &Arc<IoBufs<C>>,
     lsn: Lsn,
 ) -> Result<usize> {
     make_stable_inner(iobufs, lsn, true)
 }
 
-pub(in crate::pagecache) fn make_stable_inner(
-    iobufs: &Arc<IoBufs>,
+pub(in crate::pagecache) fn make_stable_inner<C: ConstConfig>(
+    iobufs: &Arc<IoBufs<C>>,
     lsn: Lsn,
     partial_durability: bool,
 ) -> Result<usize> {
@@ -1055,7 +1068,9 @@ pub(in crate::pagecache) fn make_stable_inner(
 /// Called by users who wish to force the current buffer
 /// to flush some pending writes. Returns the number
 /// of bytes written during this call.
-pub(in crate::pagecache) fn flush(iobufs: &Arc<IoBufs>) -> Result<usize> {
+pub(in crate::pagecache) fn flush<C: ConstConfig>(
+    iobufs: &Arc<IoBufs<C>>,
+) -> Result<usize> {
     let _cc = concurrency_control::read();
     let max_reserved_lsn = iobufs.max_reserved_lsn.load(Acquire);
     make_stable(iobufs, max_reserved_lsn)
@@ -1064,9 +1079,9 @@ pub(in crate::pagecache) fn flush(iobufs: &Arc<IoBufs>) -> Result<usize> {
 /// Attempt to seal the current IO buffer, possibly
 /// writing it to disk if there are no other writers
 /// operating on it.
-pub(in crate::pagecache) fn maybe_seal_and_write_iobuf(
-    iobufs: &Arc<IoBufs>,
-    iobuf: &Arc<IoBuf>,
+pub(in crate::pagecache) fn maybe_seal_and_write_iobuf<C: ConstConfig>(
+    iobufs: &Arc<IoBufs<C>>,
+    iobuf: &Arc<IoBuf<C::Segment>>,
     header: Header,
     from_reserve: bool,
 ) -> Result<()> {
@@ -1080,7 +1095,7 @@ pub(in crate::pagecache) fn maybe_seal_and_write_iobuf(
     let lid = iobuf.offset;
     let lsn = iobuf.lsn;
     let capacity = iobuf.capacity;
-    let segment_size = iobufs.config.segment_size;
+    let segment_size = C::Segment::SIZE;
 
     if header::offset(header) > capacity {
         // a race happened, nothing we can do
@@ -1161,7 +1176,7 @@ pub(in crate::pagecache) fn maybe_seal_and_write_iobuf(
     // its entire life cycle as soon as we do that.
     let next_iobuf = if maxed {
         let mut next_iobuf = IoBuf {
-            buf: Arc::new(UnsafeCell::new(AlignedBuf::new(segment_size))),
+            buf: Arc::new(UnsafeCell::new(C::Segment::new_uninit())),
             header: CachePadded::new(AtomicU64::new(0)),
             base: 0,
             offset: next_offset,
@@ -1198,9 +1213,10 @@ pub(in crate::pagecache) fn maybe_seal_and_write_iobuf(
     // the change.
     debug_delay();
     let intervals = iobufs.intervals.lock();
-    let old_ptr = iobufs
-        .iobuf
-        .swap(Arc::into_raw(Arc::new(next_iobuf)) as *mut IoBuf, SeqCst);
+    let old_ptr = iobufs.iobuf.swap(
+        Arc::into_raw(Arc::new(next_iobuf)) as *mut IoBuf<C::Segment>,
+        SeqCst,
+    );
 
     let old_arc = unsafe { Arc::from_raw(old_ptr) };
 
@@ -1241,7 +1257,7 @@ pub(in crate::pagecache) fn maybe_seal_and_write_iobuf(
     }
 }
 
-impl Debug for IoBufs {
+impl<C: ConstConfig> Debug for IoBufs<C> {
     fn fmt(
         &self,
         formatter: &mut fmt::Formatter<'_>,
@@ -1250,7 +1266,7 @@ impl Debug for IoBufs {
     }
 }
 
-impl Debug for IoBuf {
+impl<S: AlignedSegment> Debug for IoBuf<S> {
     fn fmt(
         &self,
         formatter: &mut fmt::Formatter<'_>,

@@ -1,13 +1,14 @@
-use crate::{pagecache::*, *};
+use crate::config::const_config::ConstConfig;
+use crate::pagecache::*;
 
 /// A pending log reservation which can be aborted or completed.
 /// NB the holder should quickly call `complete` or `abort` as
 /// taking too long to decide will cause the underlying IO
 /// buffer to become blocked.
 #[derive(Debug)]
-pub struct Reservation<'a> {
-    pub(super) log: &'a Log,
-    pub(super) iobuf: Arc<IoBuf>,
+pub struct Reservation<'a, C: ConstConfig> {
+    pub(super) log: &'a Log<C>,
+    pub(super) iobuf: Arc<IoBuf<C::Segment>>,
     pub(super) buf: &'a mut [u8],
     pub(super) flushed: bool,
     pub pointer: DiskPtr,
@@ -16,7 +17,7 @@ pub struct Reservation<'a> {
     pub(super) header_len: usize,
 }
 
-impl<'a> Drop for Reservation<'a> {
+impl<'a, C: ConstConfig> Drop for Reservation<'a, C> {
     fn drop(&mut self) {
         // We auto-abort if the user never uses a reservation.
         if !self.flushed {
@@ -27,7 +28,7 @@ impl<'a> Drop for Reservation<'a> {
     }
 }
 
-impl<'a> Reservation<'a> {
+impl<'a, C: ConstConfig> Reservation<'a, C> {
     /// Cancel the reservation, placing a failed flush on disk, returning
     /// the (cancelled) log sequence number and file offset.
     pub fn abort(mut self) -> Result<(Lsn, DiskPtr)> {

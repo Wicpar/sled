@@ -5,9 +5,9 @@ mod common;
 fn size_leak() -> sled::Result<()> {
     common::setup_logger();
 
-    let tree = sled::Config::new()
+    let tree = <sled::Config>::builder()
         .temporary(true)
-        .segment_size(2048)
+        .segment_size::<2048>()
         .flush_every_ms(None)
         .open()?;
 

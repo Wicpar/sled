@@ -167,7 +167,7 @@ macro_rules! io_fail {
         #[cfg(feature = "failpoints")]
         {
             debug_delay();
-            if fail::is_active($e) {
+            if $crate::fail::is_active($e) {
                 $config.set_global_error(Error::FailPoint);
                 return Err(Error::FailPoint).into();
             }
@@ -238,8 +238,8 @@ pub mod event_log;
 /// from a previous instance. You can use `Config::create_new`
 /// if you want to increase the chances that the database
 /// will be freshly created.
-pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Db> {
-    Config::new().path(path).open()
+pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Db<DefaultConfig>> {
+    ConfigBuilder::default().path(path).open()
 }
 
 /// Print a performance profile to standard out
@@ -261,7 +261,6 @@ pub fn print_profile() {
 /// hidden re-export of items for testing purposes
 #[doc(hidden)]
 pub use self::{
-    config::RunningConfig,
     lazy::Lazy,
     pagecache::{
         constants::{
@@ -275,7 +274,9 @@ pub use self::{
 
 pub use self::{
     batch::Batch,
-    config::{Config, Mode},
+    config::{
+        Config, ConfigBuilder, ConstConfig, DefaultConfig, DefaultSegment, Mode,
+    },
     db::Db,
     iter::Iter,
     ivec::IVec,
@@ -422,6 +423,9 @@ use std::collections::HashMap as Map;
 
 // we avoid HashMap while testing because
 // it makes tests non-deterministic
+/// hidden re-export of items for testing purposes
+#[doc(hidden)]
+pub use config::running_config::RunningConfig;
 #[cfg(feature = "for-internal-testing-only")]
 use std::collections::{BTreeMap as Map, BTreeSet as Set};
 
@@ -495,21 +499,22 @@ impl<F> MergeOperator for F where
 }
 
 mod compile_time_assertions {
+    use crate::config::Mode;
     use crate::*;
 
     #[allow(unreachable_code)]
     const fn _assert_public_types_send_sync() {
-        _assert_send::<Subscriber>();
+        _assert_send::<Subscriber<DefaultConfig>>();
 
-        _assert_send_sync::<Iter>();
-        _assert_send_sync::<Tree>();
-        _assert_send_sync::<Db>();
+        _assert_send_sync::<Iter<DefaultConfig>>();
+        _assert_send_sync::<Tree<DefaultConfig>>();
+        _assert_send_sync::<Db<DefaultConfig>>();
         _assert_send_sync::<Batch>();
         _assert_send_sync::<IVec>();
-        _assert_send_sync::<Config>();
+        _assert_send_sync::<DefaultConfig>();
         _assert_send_sync::<CompareAndSwapError>();
         _assert_send_sync::<Error>();
-        _assert_send_sync::<Event>();
+        _assert_send_sync::<Event<DefaultConfig>>();
         _assert_send_sync::<Mode>();
     }
 

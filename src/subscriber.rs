@@ -15,43 +15,43 @@ static ID_GEN: AtomicUsize = AtomicUsize::new(0);
 
 /// An event that happened to a key that a subscriber is interested in.
 #[derive(Debug, Clone)]
-pub struct Event {
+pub struct Event<C: ConstConfig> {
     /// A map of batches for each tree written to in a transaction,
     /// only one of which will be the one subscribed to.
-    pub(crate) batches: Arc<[(Tree, Batch)]>,
+    pub(crate) batches: Arc<[(Tree<C>, Batch)]>,
 }
 
-impl Event {
+impl<C: ConstConfig> Event<C> {
     pub(crate) fn single_update(
-        tree: Tree,
+        tree: Tree<C>,
         key: IVec,
         value: Option<IVec>,
-    ) -> Event {
+    ) -> Event<C> {
         Event::single_batch(
             tree,
             Batch { writes: vec![(key, value)].into_iter().collect() },
         )
     }
 
-    pub(crate) fn single_batch(tree: Tree, batch: Batch) -> Event {
+    pub(crate) fn single_batch(tree: Tree<C>, batch: Batch) -> Event<C> {
         Event::from_batches(vec![(tree, batch)])
     }
 
-    pub(crate) fn from_batches(batches: Vec<(Tree, Batch)>) -> Event {
+    pub(crate) fn from_batches(batches: Vec<(Tree<C>, Batch)>) -> Event<C> {
         Event { batches: Arc::from(batches.into_boxed_slice()) }
     }
 
     /// Iterate over each Tree, key, and optional value in this `Event`
     pub fn iter<'a>(
         &'a self,
-    ) -> Box<dyn 'a + Iterator<Item = (&'a Tree, &'a IVec, &'a Option<IVec>)>>
+    ) -> Box<dyn 'a + Iterator<Item = (&'a Tree<C>, &'a IVec, &'a Option<IVec>)>>
     {
         self.into_iter()
     }
 }
 
-impl<'a> IntoIterator for &'a Event {
-    type Item = (&'a Tree, &'a IVec, &'a Option<IVec>);
+impl<'a, C: ConstConfig> IntoIterator for &'a Event<C> {
+    type Item = (&'a Tree<C>, &'a IVec, &'a Option<IVec>);
     type IntoIter = Box<dyn 'a + Iterator<Item = Self::Item>>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -61,7 +61,8 @@ impl<'a> IntoIterator for &'a Event {
     }
 }
 
-type Senders = Map<usize, (Option<Waker>, SyncSender<OneShot<Option<Event>>>)>;
+type Senders<C> =
+    Map<usize, (Option<Waker>, SyncSender<OneShot<Option<Event<C>>>>)>;
 
 /// A subscriber listening on a specified prefix
 ///
@@ -73,7 +74,7 @@ type Senders = Map<usize, (Option<Waker>, SyncSender<OneShot<Option<Event>>>)>;
 /// Synchronous, blocking subscriber:
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use sled::{Config, Event};
+/// use sled::{ Event};
 /// let config = Config::new().temporary(true);
 ///
 /// let tree = config.open()?;
@@ -110,28 +111,28 @@ type Senders = Map<usize, (Option<Waker>, SyncSender<OneShot<Option<Event>>>)>;
 /// `Subscription` implements `Future<Output=Option<Event>>`.
 ///
 /// `while let Some(event) = (&mut subscriber).await { /* use it */ }`
-pub struct Subscriber {
+pub struct Subscriber<C: ConstConfig> {
     id: usize,
-    rx: Receiver<OneShot<Option<Event>>>,
-    existing: Option<OneShot<Option<Event>>>,
-    home: Arc<RwLock<Senders>>,
+    rx: Receiver<OneShot<Option<Event<C>>>>,
+    existing: Option<OneShot<Option<Event<C>>>>,
+    home: Arc<RwLock<Senders<C>>>,
 }
 
-impl Drop for Subscriber {
+impl<C: ConstConfig> Drop for Subscriber<C> {
     fn drop(&mut self) {
         let mut w_senders = self.home.write();
         w_senders.remove(&self.id);
     }
 }
 
-impl Subscriber {
+impl<C: ConstConfig> Subscriber<C> {
     /// Attempts to wait for a value on this `Subscriber`, returning
     /// an error if no event arrives within the provided `Duration`
     /// or if the backing `Db` shuts down.
     pub fn next_timeout(
         &mut self,
         mut timeout: Duration,
-    ) -> std::result::Result<Event, std::sync::mpsc::RecvTimeoutError> {
+    ) -> std::result::Result<Event<C>, std::sync::mpsc::RecvTimeoutError> {
         loop {
             let before_first_receive = Instant::now();
             let mut future_rx = if let Some(future_rx) = self.existing.take() {
@@ -159,8 +160,8 @@ impl Subscriber {
     }
 }
 
-impl Future for Subscriber {
-    type Output = Option<Event>;
+impl<C: ConstConfig> Future for Subscriber<C> {
+    type Output = Option<Event<C>>;
 
     fn poll(
         mut self: Pin<&mut Self>,
@@ -195,10 +196,10 @@ impl Future for Subscriber {
     }
 }
 
-impl Iterator for Subscriber {
-    type Item = Event;
+impl<C: ConstConfig> Iterator for Subscriber<C> {
+    type Item = Event<C>;
 
-    fn next(&mut self) -> Option<Event> {
+    fn next(&mut self) -> Option<Event<C>> {
         loop {
             let future_rx = self.rx.recv().ok()?;
             match future_rx.wait() {
@@ -211,12 +212,12 @@ impl Iterator for Subscriber {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct Subscribers {
-    watched: RwLock<BTreeMap<Vec<u8>, Arc<RwLock<Senders>>>>,
+pub(crate) struct Subscribers<C: ConstConfig> {
+    watched: RwLock<BTreeMap<Vec<u8>, Arc<RwLock<Senders<C>>>>>,
     ever_used: AtomicBool,
 }
 
-impl Drop for Subscribers {
+impl<C: ConstConfig> Drop for Subscribers<C> {
     fn drop(&mut self) {
         let watched = self.watched.read();
 
@@ -232,8 +233,8 @@ impl Drop for Subscribers {
     }
 }
 
-impl Subscribers {
-    pub(crate) fn register(&self, prefix: &[u8]) -> Subscriber {
+impl<C: ConstConfig> Subscribers<C> {
+    pub(crate) fn register(&self, prefix: &[u8]) -> Subscriber<C> {
         self.ever_used.store(true, Relaxed);
         let r_mu = {
             let r_mu = self.watched.read();
@@ -269,7 +270,7 @@ impl Subscribers {
     pub(crate) fn reserve_batch(
         &self,
         batch: &Batch,
-    ) -> Option<ReservedBroadcast> {
+    ) -> Option<ReservedBroadcast<C>> {
         if !self.ever_used.load(Relaxed) {
             return None;
         }
@@ -307,7 +308,7 @@ impl Subscribers {
     pub(crate) fn reserve<R: AsRef<[u8]>>(
         &self,
         key: R,
-    ) -> Option<ReservedBroadcast> {
+    ) -> Option<ReservedBroadcast<C>> {
         if !self.ever_used.load(Relaxed) {
             return None;
         }
@@ -337,12 +338,12 @@ impl Subscribers {
     }
 }
 
-pub(crate) struct ReservedBroadcast {
-    subscribers: Vec<(Option<Waker>, OneShotFiller<Option<Event>>)>,
+pub(crate) struct ReservedBroadcast<C: ConstConfig> {
+    subscribers: Vec<(Option<Waker>, OneShotFiller<Option<Event<C>>>)>,
 }
 
-impl ReservedBroadcast {
-    pub fn complete(self, event: &Event) {
+impl<C: ConstConfig> ReservedBroadcast<C> {
+    pub fn complete(self, event: &Event<C>) {
         let iter = self.subscribers.into_iter();
 
         for (waker_opt, tx) in iter {

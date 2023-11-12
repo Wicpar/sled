@@ -12,6 +12,7 @@
 //! Running this example several times via `cargo run --example structured`
 //! will initialize the count field to 0, and on subsequent runs it will
 //! increment it.
+use sled::{Config, ConstConfig};
 use {
     byteorder::{BigEndian, LittleEndian},
     zerocopy::{
@@ -19,7 +20,7 @@ use {
     },
 };
 
-fn upsert(db: &sled::Db) -> sled::Result<()> {
+fn upsert<C: ConstConfig>(db: &sled::Db<C>) -> sled::Result<()> {
     // We use `BigEndian` for key types because
     // they preserve lexicographic ordering,
     // which is nice if we ever want to iterate
@@ -106,7 +107,7 @@ struct DogValue {
     postal_code: U16<LittleEndian>,
 }
 
-fn variable_lengths(db: &sled::Db) -> sled::Result<()> {
+fn variable_lengths<C: ConstConfig>(db: &sled::Db<C>) -> sled::Result<()> {
     // here we will show how we can use zerocopy for inserting
     // fixed-size components, mixed with variable length
     // records on the end or beginning.
@@ -180,7 +181,7 @@ fn variable_lengths(db: &sled::Db) -> sled::Result<()> {
     Ok(())
 }
 
-fn hash_join(db: &sled::Db) -> sled::Result<()> {
+fn hash_join<C: ConstConfig>(db: &sled::Db<C>) -> sled::Result<()> {
     // here we will try to find cats and dogs who
     // live in the same home.
 

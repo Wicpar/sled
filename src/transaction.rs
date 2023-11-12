@@ -8,7 +8,8 @@
 //!
 //! # Examples
 //! ```
-//! # use sled::{transaction::TransactionResult, Config};
+//! # use sled::{transaction::TransactionResult };
+//! use sled::config::config::Config;
 //! # fn main() -> TransactionResult<()> {
 //!
 //! let config = Config::new().temporary(true);
@@ -49,7 +50,8 @@
 //! to the processed `Tree`.
 //!
 //! ```
-//! # use sled::{transaction::{TransactionResult, Transactional}, Config};
+//! # use sled::{transaction::{TransactionResult, Transactional} };
+//! use sled::config::config::Config;
 //! # fn main() -> TransactionResult<()> {
 //!
 //! let config = Config::new().temporary(true);
@@ -81,6 +83,7 @@
 #![allow(clippy::module_name_repetitions)]
 use std::{cell::RefCell, fmt, rc::Rc};
 
+use crate::config::const_config::ConstConfig;
 use crate::{
     concurrency_control, pin, Batch, Error, Event, Guard, IVec, Map, Protector,
     Result, Tree,
@@ -90,8 +93,8 @@ use crate::{
 /// be applied atomically to the
 /// Tree.
 #[derive(Clone)]
-pub struct TransactionalTree {
-    pub(super) tree: Tree,
+pub struct TransactionalTree<C: ConstConfig> {
+    pub(super) tree: Tree<C>,
     pub(super) writes: Rc<RefCell<Batch>>,
     pub(super) read_cache: Rc<RefCell<Map<IVec, Option<IVec>>>>,
     pub(super) flush_on_commit: Rc<RefCell<bool>>,
@@ -253,7 +256,7 @@ impl<T> From<Error> for TransactionError<T> {
     }
 }
 
-impl TransactionalTree {
+impl<C: ConstConfig> TransactionalTree<C> {
     /// Set a key to a new value
     pub fn insert<K, V>(
         &self,
@@ -353,13 +356,13 @@ impl TransactionalTree {
         true
     }
 
-    fn commit(&self, event: Event) -> Result<()> {
+    fn commit(&self, event: Event<C>) -> Result<()> {
         let writes = std::mem::take(&mut *self.writes.borrow_mut());
         let mut guard = pin();
         self.tree.apply_batch_inner(writes, Some(event), &mut guard)
     }
 
-    fn from_tree(tree: &Tree) -> Self {
+    fn from_tree(tree: &Tree<C>) -> Self {
         Self {
             tree: tree.clone(),
             writes: Default::default(),
@@ -370,11 +373,11 @@ impl TransactionalTree {
 }
 
 /// A type which allows for pluggable transactional capabilities
-pub struct TransactionalTrees {
-    inner: Vec<TransactionalTree>,
+pub struct TransactionalTrees<C: ConstConfig> {
+    inner: Vec<TransactionalTree<C>>,
 }
 
-impl TransactionalTrees {
+impl<C: ConstConfig> TransactionalTrees<C> {
     fn stage(&self) -> Protector<'_> {
         concurrency_control::write()
     }
@@ -438,19 +441,19 @@ pub const fn abort<A, T>(t: T) -> ConflictableTransactionResult<A, T> {
 }
 
 /// A type that may be transacted on in sled transactions.
-pub trait Transactional<E = ()> {
+pub trait Transactional<C: ConstConfig, E = ()> {
     /// An internal reference to an internal proxy type that
     /// mediates transactional reads and writes.
     type View;
 
     /// An internal function for creating a top-level
     /// transactional structure.
-    fn make_overlay(&self) -> Result<TransactionalTrees>;
+    fn make_overlay(&self) -> Result<TransactionalTrees<C>>;
 
     /// An internal function for viewing the transactional
     /// subcomponents based on the top-level transactional
     /// structure.
-    fn view_overlay(overlay: &TransactionalTrees) -> Self::View;
+    fn view_overlay(overlay: &TransactionalTrees<C>) -> Self::View;
 
     /// Runs a transaction, possibly retrying the passed-in closure if
     /// a concurrent conflict is detected that would cause a violation
@@ -491,52 +494,24 @@ pub trait Transactional<E = ()> {
     }
 }
 
-impl<E> Transactional<E> for &Tree {
-    type View = TransactionalTree;
+impl<E, C: ConstConfig> Transactional<C, E> for Tree<C> {
+    type View = TransactionalTree<C>;
 
-    fn make_overlay(&self) -> Result<TransactionalTrees> {
+    fn make_overlay(&self) -> Result<TransactionalTrees<C>> {
         Ok(TransactionalTrees {
             inner: vec![TransactionalTree::from_tree(self)],
         })
     }
 
-    fn view_overlay(overlay: &TransactionalTrees) -> Self::View {
+    fn view_overlay(overlay: &TransactionalTrees<C>) -> Self::View {
         overlay.inner[0].clone()
     }
 }
 
-impl<E> Transactional<E> for &&Tree {
-    type View = TransactionalTree;
+impl<E, C: ConstConfig> Transactional<C, E> for [Tree<C>] {
+    type View = Vec<TransactionalTree<C>>;
 
-    fn make_overlay(&self) -> Result<TransactionalTrees> {
-        Ok(TransactionalTrees {
-            inner: vec![TransactionalTree::from_tree(*self)],
-        })
-    }
-
-    fn view_overlay(overlay: &TransactionalTrees) -> Self::View {
-        overlay.inner[0].clone()
-    }
-}
-
-impl<E> Transactional<E> for Tree {
-    type View = TransactionalTree;
-
-    fn make_overlay(&self) -> Result<TransactionalTrees> {
-        Ok(TransactionalTrees {
-            inner: vec![TransactionalTree::from_tree(self)],
-        })
-    }
-
-    fn view_overlay(overlay: &TransactionalTrees) -> Self::View {
-        overlay.inner[0].clone()
-    }
-}
-
-impl<E> Transactional<E> for [Tree] {
-    type View = Vec<TransactionalTree>;
-
-    fn make_overlay(&self) -> Result<TransactionalTrees> {
+    fn make_overlay(&self) -> Result<TransactionalTrees<C>> {
         let same_db = self.windows(2).all(|w| {
             let path_1 = w[0].context.get_path();
             let path_2 = w[1].context.get_path();
@@ -554,15 +529,15 @@ impl<E> Transactional<E> for [Tree] {
         })
     }
 
-    fn view_overlay(overlay: &TransactionalTrees) -> Self::View {
+    fn view_overlay(overlay: &TransactionalTrees<C>) -> Self::View {
         overlay.inner.clone()
     }
 }
 
-impl<E> Transactional<E> for [&Tree] {
-    type View = Vec<TransactionalTree>;
+impl<E, C: ConstConfig> Transactional<C, E> for [&Tree<C>] {
+    type View = Vec<TransactionalTree<C>>;
 
-    fn make_overlay(&self) -> Result<TransactionalTrees> {
+    fn make_overlay(&self) -> Result<TransactionalTrees<C>> {
         let same_db = self.windows(2).all(|w| {
             let path_1 = w[0].context.get_path();
             let path_2 = w[1].context.get_path();
@@ -583,7 +558,7 @@ impl<E> Transactional<E> for [&Tree] {
         })
     }
 
-    fn view_overlay(overlay: &TransactionalTrees) -> Self::View {
+    fn view_overlay(overlay: &TransactionalTrees<C>) -> Self::View {
         overlay.inner.clone()
     }
 }
@@ -608,10 +583,10 @@ macro_rules! repeat_type {
 
 macro_rules! impl_transactional_tuple_trees {
     ($($indices:tt),+) => {
-        impl<E> Transactional<E> for repeat_type!(&Tree, ($($indices),+)) {
-            type View = repeat_type!(TransactionalTree, ($($indices),+));
+        impl<E, C: ConstConfig> Transactional<C, E> for repeat_type!(&Tree<C>, ($($indices),+)) {
+            type View = repeat_type!(TransactionalTree<C>, ($($indices),+));
 
-            fn make_overlay(&self) -> Result<TransactionalTrees> {
+            fn make_overlay(&self) -> Result<TransactionalTrees<C>> {
                 let paths = vec![
                     $(
                         self.$indices.context.get_path(),
@@ -634,7 +609,7 @@ macro_rules! impl_transactional_tuple_trees {
                 })
             }
 
-            fn view_overlay(overlay: &TransactionalTrees) -> Self::View {
+            fn view_overlay(overlay: &TransactionalTrees<C>) -> Self::View {
                 (
                     $(
                         overlay.inner[$indices].clone()

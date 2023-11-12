@@ -24,11 +24,11 @@ impl<'g> Deref for View<'g> {
     }
 }
 
-impl IntoIterator for &'_ Tree {
+impl<C: ConstConfig> IntoIterator for &'_ Tree<C> {
     type Item = Result<(IVec, IVec)>;
-    type IntoIter = Iter;
+    type IntoIter = Iter<C>;
 
-    fn into_iter(self) -> Iter {
+    fn into_iter(self) -> Iter<C> {
         self.iter()
     }
 }
@@ -42,7 +42,7 @@ const fn bounds_error() -> Result<()> {
     Err(Error::Unsupported(
         "Keys and values are limited to \
         128gb on 64-bit platforms and
-        512mb on 32-bit platforms."
+        512mb on 32-bit platforms.",
     ))
 }
 
@@ -98,22 +98,27 @@ const fn bounds_error() -> Result<()> {
 /// # let _ = std::fs::remove_dir_all("db");
 /// # Ok(()) }
 /// ```
-#[derive(Clone)]
 #[doc(alias = "keyspace")]
 #[doc(alias = "bucket")]
 #[doc(alias = "table")]
-pub struct Tree(pub(crate) Arc<TreeInner>);
+pub struct Tree<C: ConstConfig>(pub(crate) Arc<TreeInner<C>>);
+
+impl<C: ConstConfig> Clone for Tree<C> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 #[allow(clippy::module_name_repetitions)]
-pub struct TreeInner {
+pub struct TreeInner<C: ConstConfig> {
     pub(crate) tree_id: IVec,
-    pub(crate) context: Context,
-    pub(crate) subscribers: Subscribers,
+    pub(crate) context: Context<C>,
+    pub(crate) subscribers: Subscribers<C>,
     pub(crate) root: AtomicU64,
     pub(crate) merge_operator: RwLock<Option<Box<dyn MergeOperator>>>,
 }
 
-impl Drop for TreeInner {
+impl<C: ConstConfig> Drop for TreeInner<C> {
     fn drop(&mut self) {
         // Flush the underlying system in a loop until we
         // have flushed all dirty data.
@@ -130,15 +135,15 @@ impl Drop for TreeInner {
     }
 }
 
-impl Deref for Tree {
-    type Target = TreeInner;
+impl<C: ConstConfig> Deref for Tree<C> {
+    type Target = TreeInner<C>;
 
-    fn deref(&self) -> &TreeInner {
+    fn deref(&self) -> &TreeInner<C> {
         &self.0
     }
 }
 
-impl Tree {
+impl<C: ConstConfig> Tree<C> {
     /// Insert a key to a new value, returning the last value if it
     /// was set.
     ///
@@ -263,7 +268,8 @@ impl Tree {
     /// # Examples
     ///
     /// ```
-    /// # use sled::{transaction::TransactionResult, Config};
+    /// # use sled::{transaction::TransactionResult };
+    /// use sled::config::config::Config;
     /// # fn main() -> TransactionResult<()> {
     /// # let config = sled::Config::new().temporary(true);
     /// # let db = config.open()?;
@@ -370,10 +376,10 @@ impl Tree {
     ) -> transaction::TransactionResult<A, E>
     where
         F: Fn(
-            &transaction::TransactionalTree,
+            &transaction::TransactionalTree<C>,
         ) -> transaction::ConflictableTransactionResult<A, E>,
     {
-        Transactional::transaction(&self, f)
+        Transactional::transaction(self, f)
     }
 
     /// Create a new batched update that can be
@@ -411,7 +417,7 @@ impl Tree {
     pub(crate) fn apply_batch_inner(
         &self,
         batch: Batch,
-        transaction_batch_opt: Option<Event>,
+        transaction_batch_opt: Option<Event<C>>,
         guard: &mut Guard,
     ) -> Result<()> {
         let peg_opt = if transaction_batch_opt.is_none() {
@@ -907,7 +913,7 @@ impl Tree {
     /// }
     /// # }
     /// ```
-    pub fn watch_prefix<P: AsRef<[u8]>>(&self, prefix: P) -> Subscriber {
+    pub fn watch_prefix<P: AsRef<[u8]>>(&self, prefix: P) -> Subscriber<C> {
         self.subscribers.register(prefix.as_ref())
     }
 
@@ -948,7 +954,7 @@ impl Tree {
         } else {
             Err(Error::ReportableBug(
                 "threadpool failed to complete \
-                action before shutdown"
+                action before shutdown",
             ))
         }
     }
@@ -1163,7 +1169,7 @@ impl Tree {
             return Err(Error::Unsupported(
                 "must set a merge operator on this Tree \
                  before calling merge by calling \
-                 Tree::set_merge_operator"
+                 Tree::set_merge_operator",
             ));
         }
 
@@ -1305,7 +1311,7 @@ impl Tree {
     /// assert_eq!(iter.next(), None);
     /// # Ok(()) }
     /// ```
-    pub fn iter(&self) -> Iter {
+    pub fn iter(&self) -> Iter<C> {
         self.range::<Vec<u8>, _>(..)
     }
 
@@ -1339,7 +1345,7 @@ impl Tree {
     /// assert_eq!(r.next(), None);
     /// # Ok(()) }
     /// ```
-    pub fn range<K, R>(&self, range: R) -> Iter
+    pub fn range<K, R>(&self, range: R) -> Iter<C>
     where
         K: AsRef<[u8]>,
         R: RangeBounds<K>,
@@ -1411,7 +1417,7 @@ impl Tree {
     /// assert_eq!(r.next(), None);
     /// # Ok(()) }
     /// ```
-    pub fn scan_prefix<P>(&self, prefix: P) -> Iter
+    pub fn scan_prefix<P>(&self, prefix: P) -> Iter<C>
     where
         P: AsRef<[u8]>,
     {
@@ -2472,7 +2478,7 @@ impl Tree {
     }
 }
 
-impl Debug for Tree {
+impl<C: ConstConfig> Debug for Tree<C> {
     fn fmt(
         &self,
         f: &mut fmt::Formatter<'_>,

@@ -15,7 +15,7 @@ const REPLACE: LogKind = LogKind::Replace;
 #[ignore = "adding 50 causes the flush to never return"]
 fn log_writebatch() -> crate::Result<()> {
     common::setup_logger();
-    let config = Config::new().temporary(true);
+    let config: Config = <Config>::builder().temporary(true).build();
     let db = config.open()?;
     let log = &db.context.pagecache.log;
 
@@ -57,7 +57,11 @@ fn log_writebatch() -> crate::Result<()> {
 
 #[test]
 fn more_log_reservations_than_buffers() -> Result<()> {
-    let config = Config::new().temporary(true).segment_size(256);
+    const SEGMENT_SIZE: usize = 256;
+    let config = <Config>::builder()
+        .temporary(true)
+        .segment_size::<SEGMENT_SIZE>()
+        .build();
 
     let db = config.open()?;
     let log = &db.context.pagecache.log;
@@ -65,7 +69,7 @@ fn more_log_reservations_than_buffers() -> Result<()> {
 
     let total_seg_overhead = SEG_HEADER_LEN;
     let big_msg_overhead = MAX_MSG_HEADER_LEN + total_seg_overhead;
-    let big_msg_sz = config.segment_size - big_msg_overhead;
+    let big_msg_sz = SEGMENT_SIZE - big_msg_overhead;
 
     for _ in 0..256 * 30 {
         let guard = pin();
@@ -85,13 +89,15 @@ fn more_log_reservations_than_buffers() -> Result<()> {
 
 #[test]
 fn non_contiguous_log_flush() -> Result<()> {
-    let config = Config::new().temporary(true).segment_size(1024);
+    const SEGMENT_SIZE: usize = 1024;
+    let config =
+        <Config>::builder().temporary(true).segment_size::<1024>().build();
 
     let db = config.open()?;
     let log = &db.context.pagecache.log;
 
     let seg_overhead = SEG_HEADER_LEN;
-    let buf_len = config.segment_size - (MAX_MSG_HEADER_LEN + seg_overhead);
+    let buf_len = SEGMENT_SIZE - (MAX_MSG_HEADER_LEN + seg_overhead);
 
     let guard = pin();
     let res1 = log
@@ -110,14 +116,16 @@ fn non_contiguous_log_flush() -> Result<()> {
 #[test]
 #[cfg(not(miri))] // can't create threads
 fn concurrent_logging() -> Result<()> {
+    const SEGMENT_SIZE: usize = 256;
     use std::thread;
 
     common::setup_logger();
     for _ in 0..10 {
-        let config = Config::new()
+        let config = <Config>::builder()
             .temporary(true)
             .flush_every_ms(Some(50))
-            .segment_size(256);
+            .segment_size::<SEGMENT_SIZE>()
+            .build();
 
         let db = config.open()?;
 
@@ -128,7 +136,7 @@ fn concurrent_logging() -> Result<()> {
         let db6 = db.clone();
 
         let seg_overhead = SEG_HEADER_LEN;
-        let buf_len = config.segment_size - (MAX_MSG_HEADER_LEN + seg_overhead);
+        let buf_len = SEGMENT_SIZE - (MAX_MSG_HEADER_LEN + seg_overhead);
 
         let t1 = thread::Builder::new()
             .name("c1".to_string())
@@ -232,7 +240,7 @@ fn concurrent_logging() -> Result<()> {
     Ok(())
 }
 
-fn write(log: &Log) {
+fn write<C: ConstConfig>(log: &Log<C>) {
     let data_bytes = IVec::from(b"yoyoyoyo");
     let guard = pin();
     let (lsn, ptr) = log
@@ -248,7 +256,7 @@ fn write(log: &Log) {
     );
 }
 
-fn abort(log: &Log) {
+fn abort<C: ConstConfig>(log: &Log<C>) {
     let guard = pin();
     let res = log.reserve(REPLACE, PID, &IVec::from(&[0; 5]), &guard).unwrap();
     let (lsn, ptr) = res.abort().unwrap();
@@ -267,7 +275,7 @@ fn abort(log: &Log) {
 #[test]
 fn log_aborts() {
     common::setup_logger();
-    let config = Config::new().temporary(true);
+    let config = <Config>::builder().temporary(true).build();
     let db = config.open().unwrap();
     let log = &db.context.pagecache.log;
     write(log);
@@ -281,17 +289,20 @@ fn log_aborts() {
 #[test]
 #[cfg_attr(any(target_os = "fuchsia", miri), ignore)]
 fn log_chunky_iterator() {
+    const SEGMENT_SIZE: usize = 256;
     common::setup_logger();
-    let config =
-        Config::new().flush_every_ms(None).temporary(true).segment_size(256);
+    let config = <Config>::builder()
+        .flush_every_ms(None)
+        .temporary(true)
+        .segment_size::<SEGMENT_SIZE>()
+        .build();
 
     let db = config.open().unwrap();
     let log = &db.context.pagecache.log;
 
     let mut reference = vec![];
 
-    let max_valid_size =
-        config.segment_size - (MAX_MSG_HEADER_LEN + SEG_HEADER_LEN);
+    let max_valid_size = SEGMENT_SIZE - (MAX_MSG_HEADER_LEN + SEG_HEADER_LEN);
 
     for i in PID..1000 {
         let len = thread_rng().gen_range(0, max_valid_size * 2);
@@ -325,18 +336,22 @@ fn log_chunky_iterator() {
 
 #[test]
 fn multi_segment_log_iteration() -> Result<()> {
+    const SEGMENT_SIZE: usize = 256;
     common::setup_logger();
     // ensure segments are being linked
     // ensure trailers are valid
-    let config =
-        Config::new().temporary(true).segment_size(512).flush_every_ms(None);
+    let config = <Config>::builder()
+        .temporary(true)
+        .segment_size::<SEGMENT_SIZE>()
+        .flush_every_ms(None)
+        .build();
 
     // this guard prevents any segments from being freed
     let _guard = pin();
 
     let total_seg_overhead = SEG_HEADER_LEN;
     let big_msg_overhead = MAX_MSG_HEADER_LEN + total_seg_overhead;
-    let big_msg_sz = (config.segment_size - big_msg_overhead) / 64;
+    let big_msg_sz = (SEGMENT_SIZE - big_msg_overhead) / 64;
 
     let db = config.open().unwrap();
     let log = &db.context.pagecache.log;

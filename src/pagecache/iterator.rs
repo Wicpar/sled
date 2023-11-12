@@ -5,11 +5,13 @@ use super::{
     LogKind, LogOffset, LogRead, Lsn, SegmentHeader, SegmentNumber,
     MAX_MSG_HEADER_LEN, SEG_HEADER_LEN,
 };
+use crate::config::const_config::ConstConfig;
+use crate::pagecache::iobuf::AlignedSegment;
 use crate::*;
 
 #[derive(Debug)]
-pub struct LogIter {
-    pub config: RunningConfig,
+pub struct LogIter<C: ConstConfig> {
+    pub config: RunningConfig<C>,
     pub segments: BTreeMap<Lsn, LogOffset>,
     pub segment_base: Option<BasedBuf>,
     pub max_lsn: Option<Lsn>,
@@ -17,7 +19,7 @@ pub struct LogIter {
     pub last_stage: bool,
 }
 
-impl Iterator for LogIter {
+impl<C: ConstConfig> Iterator for LogIter<C> {
     type Item = (LogKind, PageId, Lsn, DiskPtr);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -27,7 +29,7 @@ impl Iterator for LogIter {
         loop {
             let remaining_seg_too_small_for_msg = !valid_entry_offset(
                 LogOffset::try_from(self.cur_lsn.unwrap_or(0)).unwrap(),
-                self.config.segment_size,
+                C::Segment::SIZE,
             );
 
             if remaining_seg_too_small_for_msg {
@@ -67,12 +69,11 @@ impl Iterator for LogIter {
             let segment_base = &self.segment_base.as_ref().unwrap();
 
             let lid = segment_base.offset
-                + LogOffset::try_from(lsn % self.config.segment_size as Lsn)
-                    .unwrap();
+                + LogOffset::try_from(lsn % C::Segment::SIZE as Lsn).unwrap();
 
             let expected_segment_number = SegmentNumber(
                 u64::try_from(lsn).unwrap()
-                    / u64::try_from(self.config.segment_size).unwrap(),
+                    / u64::try_from(C::Segment::SIZE).unwrap(),
             );
 
             match read_message(
@@ -174,7 +175,7 @@ impl Iterator for LogIter {
     }
 }
 
-impl LogIter {
+impl<C: ConstConfig> LogIter<C> {
     /// read a segment of log messages. Only call after
     /// pausing segment rewriting on the segment accountant!
     fn read_segment(&mut self) -> Result<()> {
@@ -202,8 +203,7 @@ impl LogIter {
         }
 
         assert!(
-            lsn + (self.config.segment_size as Lsn)
-                >= self.cur_lsn.unwrap_or(0),
+            lsn + (C::Segment::SIZE as Lsn) >= self.cur_lsn.unwrap_or(0),
             "caller is responsible for providing segments \
              that contain the initial cur_lsn value or higher"
         );
@@ -215,20 +215,19 @@ impl LogIter {
         );
         // we add segment_len to this check because we may be getting the
         // initial segment that is a bit behind where we left off before.
-        assert!(
-            lsn + self.config.segment_size as Lsn >= self.cur_lsn.unwrap_or(0)
-        );
+        assert!(lsn + C::Segment::SIZE as Lsn >= self.cur_lsn.unwrap_or(0));
         let f = &self.config.file;
         let segment_header = read_segment_header(f, offset)?;
-        if offset % self.config.segment_size as LogOffset != 0 {
+        if offset % C::Segment::SIZE as LogOffset != 0 {
             debug!("segment offset not divisible by segment length");
             return Err(Error::corruption(None));
         }
-        if segment_header.lsn % self.config.segment_size as Lsn != 0 {
+        if segment_header.lsn % C::Segment::SIZE as Lsn != 0 {
             debug!(
                 "expected a segment header lsn that is divisible \
                  by the segment_size ({}) instead it was {}",
-                self.config.segment_size, segment_header.lsn
+                C::Segment::SIZE,
+                segment_header.lsn
             );
             return Err(Error::corruption(None));
         }
@@ -248,7 +247,7 @@ impl LogIter {
 
         trace!("read segment header {:?}", segment_header);
 
-        let mut buf = vec![0; self.config.segment_size];
+        let mut buf = vec![0; C::Segment::SIZE];
         let size = pread_exact_or_eof(f, &mut buf, offset)?;
 
         trace!("setting stored segment buffer length to {} after read", size);
@@ -281,16 +280,16 @@ const fn valid_entry_offset(lid: LogOffset, segment_len: usize) -> bool {
 
 // Scan the log file if we don't know of any Lsn offsets yet,
 // and recover the order of segments, and the highest Lsn.
-fn scan_segment_headers_and_tail(
+fn scan_segment_headers_and_tail<C: ConstConfig>(
     min: Lsn,
-    config: &RunningConfig,
+    config: &RunningConfig<C>,
 ) -> Result<(BTreeMap<Lsn, LogOffset>, Lsn)> {
-    fn fetch(
+    fn fetch<C: ConstConfig>(
         idx: u64,
         min: Lsn,
-        config: &RunningConfig,
+        config: &RunningConfig<C>,
     ) -> Option<(LogOffset, SegmentHeader)> {
-        let segment_len = u64::try_from(config.segment_size).unwrap();
+        let segment_len = u64::try_from(C::Segment::SIZE).unwrap();
         let base_lid = idx * segment_len;
         let segment = read_segment_header(&config.file, base_lid).ok()?;
         trace!(
@@ -313,7 +312,7 @@ fn scan_segment_headers_and_tail(
         }
     }
 
-    let segment_len = LogOffset::try_from(config.segment_size).unwrap();
+    let segment_len = LogOffset::try_from(C::Segment::SIZE).unwrap();
 
     let f = &config.file;
     let file_len = f.metadata()?.len();
@@ -398,12 +397,12 @@ fn scan_segment_headers_and_tail(
 // the header. This is important because we expect that
 // the last <# io buffers> segments will join up, and we
 // never reuse buffers within this safety range.
-fn check_contiguity_in_unstable_tail(
+fn check_contiguity_in_unstable_tail<C: ConstConfig>(
     max_header_stable_lsn: Lsn,
     ordering: &BTreeMap<Lsn, LogOffset>,
-    config: &RunningConfig,
+    config: &RunningConfig<C>,
 ) -> Lsn {
-    let segment_size = config.segment_size as Lsn;
+    let segment_size = C::Segment::SIZE as Lsn;
 
     // -1..(2 *  segment_size) - 1 => 0
     // otherwise the floor of the buffer
@@ -465,11 +464,11 @@ fn check_contiguity_in_unstable_tail(
 /// and a set of segments that can be
 /// zeroed after the new snapshot is written,
 /// but no sooner, otherwise it is not crash-safe.
-pub fn raw_segment_iter_from(
+pub fn raw_segment_iter_from<C: ConstConfig>(
     lsn: Lsn,
-    config: &RunningConfig,
-) -> Result<LogIter> {
-    let segment_len = config.segment_size as Lsn;
+    config: &RunningConfig<C>,
+) -> Result<LogIter<C>> {
+    let segment_len = C::Segment::SIZE as Lsn;
     let normalized_lsn = lsn / segment_len * segment_len;
 
     let (ordering, end_of_last_msg) =

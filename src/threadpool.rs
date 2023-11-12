@@ -231,9 +231,13 @@ mod queue {
     pub(super) const TRUNCATE_QUEUE: () = ();
 }
 
+use crate::config::const_config::ConstConfig;
 use queue::spawn_to;
 
-pub fn truncate(config: crate::RunningConfig, at: u64) -> OneShot<Result<()>> {
+pub fn truncate<C: ConstConfig>(
+    config: crate::RunningConfig<C>,
+    at: u64,
+) -> OneShot<Result<()>> {
     spawn_to(
         move || {
             log::debug!("truncating file to length {}", at);
@@ -253,7 +257,9 @@ pub fn truncate(config: crate::RunningConfig, at: u64) -> OneShot<Result<()>> {
     )
 }
 
-pub fn take_fuzzy_snapshot(pc: crate::pagecache::PageCache) -> OneShot<()> {
+pub fn take_fuzzy_snapshot<C: ConstConfig>(
+    pc: crate::pagecache::PageCache<C>,
+) -> OneShot<()> {
     spawn_to(
         move || {
             if let Err(e) = pc.take_fuzzy_snapshot() {
@@ -265,9 +271,9 @@ pub fn take_fuzzy_snapshot(pc: crate::pagecache::PageCache) -> OneShot<()> {
     )
 }
 
-pub(crate) fn write_to_log(
-    iobuf: Arc<crate::pagecache::iobuf::IoBuf>,
-    iobufs: Arc<crate::pagecache::iobuf::IoBufs>,
+pub(crate) fn write_to_log<C: ConstConfig>(
+    iobuf: Arc<crate::pagecache::iobuf::IoBuf<C::Segment>>,
+    iobufs: Arc<crate::pagecache::iobuf::IoBufs<C>>,
 ) -> OneShot<()> {
     spawn_to(
         move || {

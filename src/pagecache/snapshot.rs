@@ -1,3 +1,5 @@
+use crate::config::const_config::ConstConfig;
+use crate::pagecache::iobuf::AlignedSegment;
 use crate::*;
 
 use super::{
@@ -249,10 +251,10 @@ impl Snapshot {
     }
 }
 
-fn advance_snapshot(
-    mut iter: LogIter,
+fn advance_snapshot<C: ConstConfig>(
+    mut iter: LogIter<C>,
     mut snapshot: Snapshot,
-    config: &RunningConfig,
+    config: &RunningConfig<C>,
 ) -> Result<Snapshot> {
     #[cfg(feature = "metrics")]
     let _measure = Measure::new(&M.advance_snapshot);
@@ -321,7 +323,7 @@ fn advance_snapshot(
     } else {
         let iterated_lsn = iter.cur_lsn.unwrap();
 
-        let segment_progress: Lsn = iterated_lsn % (config.segment_size as Lsn);
+        let segment_progress: Lsn = iterated_lsn % (C::Segment::SIZE as Lsn);
 
         // progress should never be below the SEG_HEADER_LEN if the segment_base
         // is set. progress can only be 0 if we've maxed out the
@@ -339,17 +341,17 @@ fn advance_snapshot(
 
         let (stable_lsn, active_segment) = if segment_progress
             + MAX_MSG_HEADER_LEN as Lsn
-            >= config.segment_size as Lsn
+            >= C::Segment::SIZE as Lsn
         {
             let bumped =
-                config.normalize(iterated_lsn) + config.segment_size as Lsn;
+                config.normalize(iterated_lsn) + C::Segment::SIZE as Lsn;
             trace!("bumping snapshot.stable_lsn to {}", bumped);
             (bumped, None)
         } else {
             if let Some(BasedBuf { offset, .. }) = iter.segment_base {
                 // either situation 3 or situation 4. we need to zero the
                 // tail of the segment after the recovered tip
-                let shred_len = config.segment_size
+                let shred_len = C::Segment::SIZE
                     - usize::try_from(segment_progress).unwrap()
                     - 1;
                 let shred_zone = vec![MessageKind::Corrupted.into(); shred_len];
@@ -455,7 +457,8 @@ fn advance_snapshot(
         io_fail!(config, "segment initial free zero");
         pwrite_all(
             &config.file,
-            &*vec![MessageKind::Corrupted.into(); config.segment_size],
+            // TODO: check that this does not explode memory use and executable size
+            &C::Segment::new_fill(MessageKind::Corrupted.into()),
             *to_zero,
         )?;
         if !config.temporary {
@@ -471,7 +474,9 @@ fn advance_snapshot(
 
 /// Read a `Snapshot` or generate a default, then advance it to
 /// the tip of the data file, if present.
-pub fn read_snapshot_or_default(config: &RunningConfig) -> Result<Snapshot> {
+pub fn read_snapshot_or_default<C: ConstConfig>(
+    config: &RunningConfig<C>,
+) -> Result<Snapshot> {
     // NB we want to error out if the read snapshot was corrupted.
     // We only use a default Snapshot when there is no snapshot found.
     let last_snap = read_snapshot(config)?.unwrap_or_default();
@@ -487,7 +492,9 @@ pub fn read_snapshot_or_default(config: &RunningConfig) -> Result<Snapshot> {
 /// Read a `Snapshot` from disk.
 /// Returns an error if the read snapshot was corrupted.
 /// Returns `Ok(Some(snapshot))` if there was nothing written.
-fn read_snapshot(config: &RunningConfig) -> Result<Option<Snapshot>> {
+fn read_snapshot<C: ConstConfig>(
+    config: &RunningConfig<C>,
+) -> Result<Option<Snapshot>> {
     let mut candidates = config.get_snapshot_files()?;
     if candidates.is_empty() {
         debug!("no previous snapshot found");
@@ -530,8 +537,8 @@ fn read_snapshot(config: &RunningConfig) -> Result<Option<Snapshot>> {
     Snapshot::deserialize(&mut buf.as_slice()).map(Some)
 }
 
-pub(in crate::pagecache) fn write_snapshot(
-    config: &RunningConfig,
+pub(in crate::pagecache) fn write_snapshot<C: ConstConfig>(
+    config: &RunningConfig<C>,
     snapshot: &Snapshot,
 ) -> Result<()> {
     trace!("writing snapshot {:?}", snapshot);

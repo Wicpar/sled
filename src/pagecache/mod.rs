@@ -2,6 +2,46 @@
 //! databases.
 #![allow(unsafe_code)]
 
+use std::convert::{TryFrom, TryInto};
+use std::{fmt, ops::Deref};
+
+#[cfg(any(all(not(unix), not(windows)), miri))]
+use parallel_io_polyfill::{pread_exact, pread_exact_or_eof, pwrite_all};
+#[cfg(all(unix, not(miri)))]
+use parallel_io_unix::{pread_exact, pread_exact_or_eof, pwrite_all};
+#[cfg(all(windows, not(miri)))]
+use parallel_io_windows::{pread_exact, pread_exact_or_eof, pwrite_all};
+
+use crate::config::const_config::ConstConfig;
+use crate::pagecache::iobuf::AlignedSegment;
+use crate::*;
+
+use self::{
+    constants::{
+        BATCH_MANIFEST_PID, COUNTER_PID, META_PID,
+        PAGE_CONSOLIDATION_THRESHOLD, SEGMENT_CLEANUP_THRESHOLD,
+    },
+    header::Header,
+    iobuf::{roll_iobuf, IoBuf, IoBufs},
+    iterator::{raw_segment_iter_from, LogIter},
+    pagetable::PageTable,
+    segment::{SegmentAccountant, SegmentCleaner, SegmentOp},
+};
+pub use self::{
+    constants::{MAX_MSG_HEADER_LEN, MAX_SPACE_AMPLIFICATION, SEG_HEADER_LEN},
+    disk_pointer::DiskPtr,
+    logger::{Log, LogRead},
+};
+pub(crate) use self::{
+    heap::{Heap, HeapId},
+    logger::{
+        read_message, read_segment_header, MessageHeader, SegmentHeader,
+        SegmentNumber,
+    },
+    reservation::Reservation,
+    snapshot::{read_snapshot_or_default, PageState, Snapshot},
+};
+
 pub mod constants;
 pub mod logger;
 
@@ -20,47 +60,6 @@ mod parallel_io_windows;
 mod reservation;
 mod segment;
 mod snapshot;
-
-use std::{fmt, ops::Deref};
-
-use crate::*;
-
-#[cfg(any(all(not(unix), not(windows)), miri))]
-use parallel_io_polyfill::{pread_exact, pread_exact_or_eof, pwrite_all};
-
-#[cfg(all(unix, not(miri)))]
-use parallel_io_unix::{pread_exact, pread_exact_or_eof, pwrite_all};
-
-#[cfg(all(windows, not(miri)))]
-use parallel_io_windows::{pread_exact, pread_exact_or_eof, pwrite_all};
-
-use self::{
-    constants::{
-        BATCH_MANIFEST_PID, COUNTER_PID, META_PID,
-        PAGE_CONSOLIDATION_THRESHOLD, SEGMENT_CLEANUP_THRESHOLD,
-    },
-    header::Header,
-    iobuf::{roll_iobuf, IoBuf, IoBufs},
-    iterator::{raw_segment_iter_from, LogIter},
-    pagetable::PageTable,
-    segment::{SegmentAccountant, SegmentCleaner, SegmentOp},
-};
-
-pub(crate) use self::{
-    heap::{Heap, HeapId},
-    logger::{
-        read_message, read_segment_header, MessageHeader, SegmentHeader,
-        SegmentNumber,
-    },
-    reservation::Reservation,
-    snapshot::{read_snapshot_or_default, PageState, Snapshot},
-};
-
-pub use self::{
-    constants::{MAX_MSG_HEADER_LEN, MAX_SPACE_AMPLIFICATION, SEG_HEADER_LEN},
-    disk_pointer::DiskPtr,
-    logger::{Log, LogRead},
-};
 
 /// A file offset in the database log.
 pub type LogOffset = u64;
@@ -206,8 +205,6 @@ where
     usize::try_from(from).expect("lost data cast while converting to usize")
 }
 
-use std::convert::{TryFrom, TryInto};
-
 pub(in crate::pagecache) const fn lsn_to_arr(number: Lsn) -> [u8; 8] {
     number.to_le_bytes()
 }
@@ -344,11 +341,11 @@ impl Update {
 /// If this is dropped without calling `seal_batch`, the complete
 /// recovery effect will not occur.
 #[derive(Debug)]
-pub struct RecoveryGuard<'a> {
-    batch_res: Reservation<'a>,
+pub struct RecoveryGuard<'a, C: ConstConfig> {
+    batch_res: Reservation<'a, C>,
 }
 
-impl<'a> RecoveryGuard<'a> {
+impl<'a, C: ConstConfig> RecoveryGuard<'a, C> {
     /// Writes the last LSN for a batch into an earlier
     /// reservation, releasing it.
     pub(crate) fn seal_batch(self) -> Result<()> {
@@ -426,27 +423,33 @@ impl Page {
 
 /// A lock-free pagecache which supports linkmented pages
 /// for dramatically improving write throughput.
-#[derive(Clone)]
-pub struct PageCache(Arc<PageCacheInner>);
 
-impl Deref for PageCache {
-    type Target = PageCacheInner;
+pub struct PageCache<C: ConstConfig>(Arc<PageCacheInner<C>>);
 
-    fn deref(&self) -> &PageCacheInner {
+impl<C: ConstConfig> Clone for PageCache<C> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<C: ConstConfig> Deref for PageCache<C> {
+    type Target = PageCacheInner<C>;
+
+    fn deref(&self) -> &PageCacheInner<C> {
         &self.0
     }
 }
 
-pub struct PageCacheInner {
+pub struct PageCacheInner<C: ConstConfig> {
     was_recovered: bool,
-    pub(crate) config: RunningConfig,
+    pub(crate) config: RunningConfig<C>,
     inner: PageTable,
     next_pid_to_allocate: Mutex<PageId>,
     // needs to be a sub-Arc because we separate
     // it for async modification in an EBR guard
     free: Arc<Mutex<FastSet8<PageId>>>,
     #[doc(hidden)]
-    pub log: Log,
+    pub log: Log<C>,
     lru: Lru,
 
     idgen: AtomicU64,
@@ -459,7 +462,7 @@ pub struct PageCacheInner {
     snapshot_lock: Mutex<()>,
 }
 
-impl Debug for PageCache {
+impl<C: ConstConfig> Debug for PageCache<C> {
     fn fmt(
         &self,
         f: &mut fmt::Formatter<'_>,
@@ -473,7 +476,7 @@ impl Debug for PageCache {
 }
 
 #[cfg(feature = "event_log")]
-impl Drop for PageCacheInner {
+impl<C: ConstConfig> Drop for PageCacheInner<C> {
     fn drop(&mut self) {
         trace!("dropping pagecache");
 
@@ -502,9 +505,9 @@ impl Drop for PageCacheInner {
     }
 }
 
-impl PageCache {
+impl<C: ConstConfig> PageCache<C> {
     /// Instantiate a new `PageCache`.
-    pub(crate) fn start(config: RunningConfig) -> Result<PageCache> {
+    pub(crate) fn start(config: RunningConfig<C>) -> Result<PageCache<C>> {
         trace!("starting pagecache");
 
         config.reset_global_error();
@@ -842,7 +845,7 @@ impl PageCache {
                     if link_count > 0
                         && link_count % self.config.snapshot_after_ops == 0
                     {
-                        let s2: PageCache = self.clone();
+                        let s2: PageCache<C> = self.clone();
                         threadpool::take_fuzzy_snapshot(s2);
                     }
 
@@ -964,7 +967,7 @@ impl PageCache {
     }
 }
 
-impl PageCacheInner {
+impl<C: ConstConfig> PageCacheInner<C> {
     /// Flushes any pending IO buffers to disk to ensure durability.
     /// Returns the number of bytes written during this call.
     pub(crate) fn flush(&self) -> Result<usize> {
@@ -1085,7 +1088,10 @@ impl PageCacheInner {
     /// to facilitate transactions and write batches when
     /// combined with a concurrency control system in another
     /// component.
-    pub(crate) fn pin_log(&self, guard: &Guard) -> Result<RecoveryGuard<'_>> {
+    pub(crate) fn pin_log(
+        &self,
+        guard: &Guard,
+    ) -> Result<RecoveryGuard<'_, C>> {
         // HACK: we are rolling the io buffer before AND
         // after taking out the reservation pin to avoid
         // a deadlock where the batch reservation causes
@@ -1233,15 +1239,14 @@ impl PageCacheInner {
 
             if let Some(segment_to_purge) = segment_to_purge_opt {
                 let purge_segment_id =
-                    segment_to_purge / self.config.segment_size as u64;
+                    segment_to_purge / C::Segment::SIZE as u64;
 
                 let already_moved = !unsafe { page_view.read.deref() }
                     .cache_infos
                     .iter()
                     .any(|ce| {
                         if let Some(lid) = ce.pointer.lid() {
-                            lid / self.config.segment_size as u64
-                                == purge_segment_id
+                            lid / C::Segment::SIZE as u64 == purge_segment_id
                         } else {
                             // the item has been relocated off-log to
                             // a slot in the heap.
@@ -1417,8 +1422,7 @@ impl PageCacheInner {
     pub(crate) fn space_amplification(&self) -> Result<f64> {
         let on_disk_bytes = self.size_on_disk()? as f64;
         let logical_size = (self.logical_size_of_all_tree_pages()?
-            + self.config.segment_size as u64)
-            as f64;
+            + C::Segment::SIZE as u64) as f64;
 
         Ok(on_disk_bytes / logical_size)
     }
@@ -1952,7 +1956,7 @@ impl PageCacheInner {
 
         let expected_segment_number: SegmentNumber = SegmentNumber(
             u64::try_from(lsn).unwrap()
-                / u64::try_from(self.config.segment_size).unwrap(),
+                / u64::try_from(C::Segment::SIZE).unwrap(),
         );
 
         iobuf::make_durable(&self.log.iobufs, lsn)?;

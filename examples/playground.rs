@@ -1,9 +1,10 @@
 extern crate sled;
 
-use sled::{Config, Result};
+use sled::Config;
+use sled::Result;
 
 fn basic() -> Result<()> {
-    let config = Config::new().temporary(true);
+    let config: Config = <Config>::builder().temporary(true).build();
 
     let db = config.open()?;
 
@@ -50,7 +51,7 @@ fn merge_operator() -> Result<()> {
         Some(ret)
     }
 
-    let config = Config::new().temporary(true);
+    let config: Config = <Config>::builder().temporary(true).build();
 
     let db = config.open()?;
     db.set_merge_operator(concatenate_merge);

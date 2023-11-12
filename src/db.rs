@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use crate::config::const_config::ConstConfig;
 use crate::*;
 
 const DEFAULT_TREE_ID: &[u8] = b"__sled__default";
@@ -13,22 +14,22 @@ const DEFAULT_TREE_ID: &[u8] = b"__sled__default";
 /// `Tree::flush`.
 #[derive(Clone)]
 #[doc(alias = "database")]
-pub struct Db {
+pub struct Db<C: ConstConfig = DefaultConfig> {
     #[doc(hidden)]
-    pub context: Context,
-    pub(crate) default: Tree,
-    tenants: Arc<RwLock<FastMap8<IVec, Tree>>>,
+    pub context: Context<C>,
+    pub(crate) default: Tree<C>,
+    tenants: Arc<RwLock<FastMap8<IVec, Tree<C>>>>,
 }
 
-impl Deref for Db {
-    type Target = Tree;
+impl<C: ConstConfig> Deref for Db<C> {
+    type Target = Tree<C>;
 
-    fn deref(&self) -> &Tree {
+    fn deref(&self) -> &Tree<C> {
         &self.default
     }
 }
 
-impl Debug for Db {
+impl<C: ConstConfig> Debug for Db<C> {
     fn fmt(
         &self,
         f: &mut fmt::Formatter<'_>,
@@ -46,8 +47,8 @@ impl Debug for Db {
     }
 }
 
-impl Db {
-    pub(crate) fn start_inner(config: RunningConfig) -> Result<Self> {
+impl<C: ConstConfig> Db<C> {
+    pub(crate) fn start_inner(config: RunningConfig<C>) -> Result<Self> {
         #[cfg(feature = "metrics")]
         let _measure = Measure::new(&M.tree_start);
 
@@ -105,7 +106,7 @@ impl Db {
 
     /// Open or create a new disk-backed Tree with its own keyspace,
     /// accessible from the `Db` via the provided identifier.
-    pub fn open_tree<V: AsRef<[u8]>>(&self, name: V) -> Result<Tree> {
+    pub fn open_tree<V: AsRef<[u8]>>(&self, name: V) -> Result<Tree<C>> {
         let name_ref = name.as_ref();
 
         {

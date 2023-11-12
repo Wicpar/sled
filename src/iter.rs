@@ -34,15 +34,15 @@ macro_rules! iter_try {
 }
 
 /// An iterator over keys and values in a `Tree`.
-pub struct Iter {
-    pub(super) tree: Tree,
+pub struct Iter<C: ConstConfig> {
+    pub(super) tree: Tree<C>,
     pub(super) hi: Bound<IVec>,
     pub(super) lo: Bound<IVec>,
     pub(super) cached_node: Option<(PageId, Node)>,
     pub(super) going_forward: bool,
 }
 
-impl Iter {
+impl<C: ConstConfig> Iter<C> {
     /// Iterate over the keys of this Tree
     pub fn keys(
         self,
@@ -147,7 +147,7 @@ impl Iter {
     }
 }
 
-impl Iterator for Iter {
+impl<C: ConstConfig> Iterator for Iter<C> {
     type Item = Result<(IVec, IVec)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -162,7 +162,7 @@ impl Iterator for Iter {
     }
 }
 
-impl DoubleEndedIterator for Iter {
+impl<C: ConstConfig> DoubleEndedIterator for Iter<C> {
     fn next_back(&mut self) -> Option<Self::Item> {
         #[cfg(feature = "metrics")]
         let _measure = Measure::new(&M.tree_reverse_scan);

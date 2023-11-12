@@ -203,12 +203,13 @@ fn prop_tree_crashes_nicely(ops: Vec<Op>, flusher: bool) -> bool {
 fn run_tree_crashes_nicely(ops: Vec<Op>, flusher: bool) -> bool {
     common::setup_logger();
 
-    let config = Config::new()
+    let config = <Config>::builder()
         .temporary(true)
         .flush_every_ms(if flusher { Some(1) } else { None })
         .cache_capacity(256)
         .idgen_persist_interval(1)
-        .segment_size(SEGMENT_SIZE);
+        .segment_size::<SEGMENT_SIZE>()
+        .build();
 
     let mut tree = config.open().expect("tree should start");
     let mut reference = BTreeMap::new();
@@ -485,9 +486,10 @@ fn run_tree_crashes_nicely(ops: Vec<Op>, flusher: bool) -> bool {
                     if reference_entry.versions.len() > 1
                         && reference_entry.crash_epoch == crash_counter
                     {
-                        let last = std::mem::take(&mut reference_entry.versions)
-                        .pop()
-                        .unwrap();
+                        let last =
+                            std::mem::take(&mut reference_entry.versions)
+                                .pop()
+                                .unwrap();
                         reference_entry.versions.push(last);
                     }
                 }

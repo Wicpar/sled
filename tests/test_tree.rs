@@ -41,7 +41,11 @@ fn kv(i: usize) -> Vec<u8> {
 fn monotonic_inserts() {
     common::setup_logger();
 
-    let db = Config::new().temporary(true).flush_every_ms(None).open().unwrap();
+    let db = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(None)
+        .open()
+        .unwrap();
 
     for len in [1_usize, 16, 32, 1024].iter() {
         for i in 0_usize..*len {
@@ -86,7 +90,11 @@ fn fixed_stride_inserts() {
     // this is intended to test the fixed stride key omission optimization
     common::setup_logger();
 
-    let db = Config::new().temporary(true).flush_every_ms(None).open().unwrap();
+    let db = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(None)
+        .open()
+        .unwrap();
 
     let mut expected = std::collections::HashSet::new();
     for k in 0..4096_u16 {
@@ -135,7 +143,11 @@ fn fixed_stride_inserts() {
 fn sequential_inserts() {
     common::setup_logger();
 
-    let db = Config::new().temporary(true).flush_every_ms(None).open().unwrap();
+    let db = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(None)
+        .open()
+        .unwrap();
 
     for len in [1, 16, 32, u16::MAX].iter() {
         for i in 0..*len {
@@ -155,7 +167,11 @@ fn sequential_inserts() {
 fn reverse_inserts() {
     common::setup_logger();
 
-    let db = Config::new().temporary(true).flush_every_ms(None).open().unwrap();
+    let db = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(None)
+        .open()
+        .unwrap();
 
     for len in [1, 16, 32, u16::MAX].iter() {
         for i in 0..*len {
@@ -179,10 +195,10 @@ fn very_large_reverse_tree_iterator() {
     let mut b = vec![255; 1024 * 1024];
     b.push(1);
 
-    let db = Config::new()
+    let db = <Config>::builder()
         .temporary(true)
         .flush_every_ms(Some(1))
-        .segment_size(256)
+        .segment_size::<256>()
         .open()
         .unwrap();
 
@@ -233,7 +249,7 @@ fn varied_compression_ratios() {
 fn concurrent_tree_pops() -> sled::Result<()> {
     use std::thread;
 
-    let db = sled::Config::new().temporary(true).open()?;
+    let db = <Config>::builder().temporary(true).open()?;
 
     // Insert values 0..5
     for x in 0u32..5 {
@@ -276,10 +292,11 @@ fn concurrent_tree_ops() {
     for i in 0..INTENSITY {
         debug!("beginning test {}", i);
 
-        let config = Config::new()
+        let config = <Config>::builder()
             .temporary(true)
             .flush_every_ms(Some(1))
-            .segment_size(256);
+            .segment_size::<256>()
+            .build();
 
         macro_rules! par {
             ($t:ident, $f:expr) => {
@@ -309,7 +326,7 @@ fn concurrent_tree_ops() {
 
         debug!("========== initial sets test {} ==========", i);
         let t = Arc::new(config.open().unwrap());
-        par! {t, |tree: &Tree, k: Vec<u8>| {
+        par! {t, |tree: &Tree<_>, k: Vec<u8>| {
             assert_eq!(tree.get(&*k), Ok(None));
             tree.insert(&k, k.clone()).expect("we should write successfully");
             assert_eq!(tree.get(&*k).unwrap(), Some(k.clone().into()),
@@ -340,7 +357,7 @@ fn concurrent_tree_ops() {
         }
 
         debug!("========== reading sets in test {} ==========", i);
-        par! {t, |tree: &Tree, k: Vec<u8>| {
+        par! {t, |tree: &Tree<_>, k: Vec<u8>| {
             if let Some(v) =  tree.get(&*k).unwrap() {
                 if v != k {
                     panic!("expected key {:?} not found", k);
@@ -356,7 +373,7 @@ fn concurrent_tree_ops() {
             Arc::new(config.open().expect("should be able to restart Tree"));
 
         debug!("========== CAS test in test {} ==========", i);
-        par! {t, |tree: &Tree, k: Vec<u8>| {
+        par! {t, |tree: &Tree<_>, k: Vec<u8>| {
             let k1 = k.clone();
             let mut k2 = k;
             k2.reverse();
@@ -367,7 +384,7 @@ fn concurrent_tree_ops() {
         let t =
             Arc::new(config.open().expect("should be able to restart Tree"));
 
-        par! {t, |tree: &Tree, k: Vec<u8>| {
+        par! {t, |tree: &Tree<_>, k: Vec<u8>| {
             let k1 = k.clone();
             let mut k2 = k;
             k2.reverse();
@@ -379,7 +396,7 @@ fn concurrent_tree_ops() {
             Arc::new(config.open().expect("should be able to restart Tree"));
 
         debug!("========== deleting in test {} ==========", i);
-        par! {t, |tree: &Tree, k: Vec<u8>| {
+        par! {t, |tree: &Tree<_>, k: Vec<u8>| {
             tree.remove(&*k).unwrap();
         }};
 
@@ -387,7 +404,7 @@ fn concurrent_tree_ops() {
         let t =
             Arc::new(config.open().expect("should be able to restart Tree"));
 
-        par! {t, |tree: &Tree, k: Vec<u8>| {
+        par! {t, |tree: &Tree<_>, k: Vec<u8>| {
             assert_eq!(tree.get(&*k), Ok(None));
         }};
     }
@@ -404,7 +421,8 @@ fn concurrent_tree_iter() -> Result<()> {
     const N_FORWARD: usize = INTENSITY;
     const N_REVERSE: usize = INTENSITY;
 
-    let config = Config::new().temporary(true).flush_every_ms(Some(1));
+    let config =
+        <Config>::builder().temporary(true).flush_every_ms(Some(1)).build();
 
     let t = config.open().unwrap();
 
@@ -583,10 +601,11 @@ fn concurrent_tree_transactions() -> TransactionResult<()> {
 
     common::setup_logger();
 
-    let config = Config::new()
+    let config = <Config>::builder()
         .temporary(true)
         .flush_every_ms(Some(1))
-        .use_compression(true);
+        .use_compression(true)
+        .build();
     let db = config.open().unwrap();
 
     db.insert(b"k1", b"cats").unwrap();
@@ -674,7 +693,7 @@ fn concurrent_tree_transactions() -> TransactionResult<()> {
 
 #[test]
 fn tree_flush_in_transaction() {
-    let config = sled::Config::new().temporary(true);
+    let config = <Config>::builder().temporary(true);
     let db = config.open().unwrap();
     let tree = db.open_tree(b"a").unwrap();
 
@@ -691,10 +710,16 @@ fn tree_flush_in_transaction() {
 fn incorrect_multiple_db_transactions() -> TransactionResult<()> {
     common::setup_logger();
 
-    let db1 =
-        Config::new().temporary(true).flush_every_ms(Some(1)).open().unwrap();
-    let db2 =
-        Config::new().temporary(true).flush_every_ms(Some(1)).open().unwrap();
+    let db1 = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(Some(1))
+        .open()
+        .unwrap();
+    let db2 = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(Some(1))
+        .open()
+        .unwrap();
 
     let result: TransactionResult<()> =
         (&*db1, &*db2).transaction::<_, ()>(|_| Ok(()));
@@ -708,7 +733,8 @@ fn incorrect_multiple_db_transactions() -> TransactionResult<()> {
 fn many_tree_transactions() -> TransactionResult<()> {
     common::setup_logger();
 
-    let config = Config::new().temporary(true).flush_every_ms(Some(1));
+    let config =
+        <Config>::builder().temporary(true).flush_every_ms(Some(1)).build();
     let db = Arc::new(config.open().unwrap());
     let t1 = db.open_tree(b"1")?;
     let t2 = db.open_tree(b"2")?;
@@ -731,7 +757,8 @@ fn many_tree_transactions() -> TransactionResult<()> {
 fn batch_outside_of_transaction() -> TransactionResult<()> {
     common::setup_logger();
 
-    let config = Config::new().temporary(true).flush_every_ms(Some(1));
+    let config =
+        <Config>::builder().temporary(true).flush_every_ms(Some(1)).build();
     let db = config.open().unwrap();
 
     let t1 = db.open_tree(b"1")?;
@@ -760,7 +787,7 @@ fn tree_subdir() {
     let mut path = parent_path.clone();
     path.push("test_subdir");
 
-    let config = Config::new().path(&path);
+    let config = <Config>::builder().path(&path).build();
 
     let t = config.open().unwrap();
 
@@ -768,7 +795,7 @@ fn tree_subdir() {
 
     drop(t);
 
-    let config = Config::new().path(&path);
+    let config = <Config>::builder().path(&path).build();
 
     let t = config.open().unwrap();
 
@@ -784,7 +811,8 @@ fn tree_subdir() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn tree_small_keys_iterator() {
-    let config = Config::new().temporary(true).flush_every_ms(Some(1));
+    let config =
+        <Config>::builder().temporary(true).flush_every_ms(Some(1)).build();
     let t = config.open().unwrap();
     for i in 0..N_PER_THREAD {
         let k = kv(i);
@@ -832,7 +860,8 @@ fn tree_big_keys_iterator() {
         base
     }
 
-    let config = Config::new().temporary(true).flush_every_ms(Some(1));
+    let config =
+        <Config>::builder().temporary(true).flush_every_ms(Some(1)).build();
 
     let t = config.open().unwrap();
     for i in 0..N_PER_THREAD {
@@ -872,7 +901,8 @@ fn tree_big_keys_iterator() {
 
 #[test]
 fn tree_subscribers_and_keyspaces() -> Result<()> {
-    let config = Config::new().temporary(true).flush_every_ms(Some(1));
+    let config =
+        <Config>::builder().temporary(true).flush_every_ms(Some(1)).build();
 
     let db = config.open().unwrap();
 
@@ -962,7 +992,8 @@ fn tree_subscribers_and_keyspaces() -> Result<()> {
 fn tree_range() {
     common::setup_logger();
 
-    let config = Config::new().temporary(true).flush_every_ms(Some(1));
+    let config =
+        <Config>::builder().temporary(true).flush_every_ms(Some(1)).build();
     let t = config.open().unwrap();
 
     t.insert(b"0", vec![0]).unwrap();
@@ -1012,10 +1043,11 @@ fn tree_range() {
 fn recover_tree() {
     common::setup_logger();
 
-    let config = Config::new()
+    let config = <Config>::builder()
         .temporary(true)
         .flush_every_ms(Some(1))
-        .segment_size(4096);
+        .segment_size::<4096>()
+        .build();
 
     let t = config.open().unwrap();
     for i in 0..N_PER_THREAD {
@@ -1047,18 +1079,22 @@ fn create_tree() {
     let _ = std::fs::remove_dir_all(path);
 
     {
-        let config = Config::new().create_new(true).path(path);
+        let config = <Config>::builder().create_new(true).path(path).build();
         config.open().unwrap();
     }
 
-    let config = Config::new().create_new(true).path(path);
+    let config = <Config>::builder().create_new(true).path(path).build();
     config.open().unwrap_err();
     std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]
 fn contains_tree() {
-    let db = Config::new().temporary(true).flush_every_ms(None).open().unwrap();
+    let db = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(None)
+        .open()
+        .unwrap();
     let tree_one = db.open_tree("tree 1").unwrap();
     let tree_two = db.open_tree("tree 2").unwrap();
 
@@ -1078,8 +1114,8 @@ fn contains_tree() {
 fn tree_import_export() -> Result<()> {
     common::setup_logger();
 
-    let config_1 = Config::new().temporary(true);
-    let config_2 = Config::new().temporary(true);
+    let config_1 = <Config>::builder().temporary(true).build();
+    let config_2 = <Config>::builder().temporary(true).build();
 
     let db = config_1.open()?;
     for db_id in 0..N_THREADS {
@@ -1152,8 +1188,8 @@ fn quickcheck_tree_matches_btreemap() {
         .tests(n_tests)
         .max_tests(n_tests * 10)
         .quickcheck(
-            prop_tree_matches_btreemap
-                as fn(Vec<Op>, bool, bool, u8, u8) -> bool,
+            prop_tree_matches_btreemap::<256>
+                as fn(Vec<Op>, bool, bool, u8) -> bool,
         );
 }
 
@@ -1161,7 +1197,7 @@ fn quickcheck_tree_matches_btreemap() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_00() {
     // postmortem:
-    prop_tree_matches_btreemap(vec![Restart], false, false, 0, 0);
+    prop_tree_matches_btreemap::<256>(vec![Restart], false, false, 0);
 }
 
 #[test]
@@ -1176,7 +1212,7 @@ fn tree_bug_01() {
     // snapshot (snapshot every 1 set in Config), we iterated up until
     // that offset. make_stable requires our stable offset to be >=
     // the provided one, to deal with 0.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![32]), 9),
             Set(Key(vec![195]), 13),
@@ -1185,7 +1221,6 @@ fn tree_bug_01() {
         ],
         true,
         false,
-        0,
         0,
     );
 }
@@ -1204,7 +1239,7 @@ fn tree_bug_02() {
     // portmortem 2: when refactoring iterators, failed
     // to account for node.hi being empty on the infinity
     // shard
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Restart,
             Set(Key(vec![215]), 121),
@@ -1215,7 +1250,6 @@ fn tree_bug_02() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1225,7 +1259,7 @@ fn tree_bug_03() {
     // postmortem: the tree was not persisting and recovering root hoists
     // postmortem 2: when refactoring the log storage, we failed to restart
     // log writing in the proper location.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![113]), 204),
             Set(Key(vec![119]), 205),
@@ -1240,7 +1274,6 @@ fn tree_bug_03() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1252,7 +1285,7 @@ fn tree_bug_04() {
     // postmortem 2: after refactoring log storage, we were not properly
     // setting the log tip, and the beginning got clobbered after writing
     // after a restart.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![158]), 31),
             Set(Key(vec![111]), 134),
@@ -1267,7 +1300,6 @@ fn tree_bug_04() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1276,7 +1308,7 @@ fn tree_bug_04() {
 fn tree_bug_05() {
     // postmortem: during recovery, the segment accountant was failing to
     // properly set the file's tip.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![231]), 107),
             Set(Key(vec![251]), 42),
@@ -1290,7 +1322,6 @@ fn tree_bug_05() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1301,7 +1332,7 @@ fn tree_bug_06() {
     // performed while iterating over rewritten segment buffers, and using
     // former garbage data. fix: use the crc that's there for catching torn
     // writes with high probability, AND zero out buffers.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![162]), 8),
             Set(Key(vec![59]), 192),
@@ -1315,7 +1346,6 @@ fn tree_bug_06() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1325,7 +1355,7 @@ fn tree_bug_07() {
     // postmortem: the segment accountant was not fully recovered, and thought
     // that it could reuse a particular segment that wasn't actually empty
     // yet.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![135]), 22),
             Set(Key(vec![41]), 36),
@@ -1340,7 +1370,6 @@ fn tree_bug_07() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1349,7 +1378,7 @@ fn tree_bug_07() {
 fn tree_bug_08() {
     // postmortem: failed to properly recover the state in the segment
     // accountant that tracked the previously issued segment.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![145]), 151),
             Set(Key(vec![155]), 148),
@@ -1363,7 +1392,6 @@ fn tree_bug_08() {
         ],
         true,
         false,
-        0,
         0,
     );
 }
@@ -1379,7 +1407,7 @@ fn tree_bug_09() {
     // postmortem 2: page size tracking was inconsistent in SA. completely
     // removed exact size tracking, and went back to simpler pure-page
     // tenancy model.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![189]), 36),
             Set(Key(vec![254]), 194),
@@ -1395,7 +1423,6 @@ fn tree_bug_09() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1405,7 +1432,7 @@ fn tree_bug_10() {
     // postmortem: after reusing a segment, but not completely writing a
     // segment, we were hitting an old LSN and violating an assert, rather
     // than just ending.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![152]), 163),
             Set(Key(vec![105]), 191),
@@ -1435,7 +1462,6 @@ fn tree_bug_10() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1445,7 +1471,7 @@ fn tree_bug_11() {
     // postmortem: a stall was happening because LSNs and LogIds were being
     // conflated in calls to make_stable. A higher LogId than any LSN was
     // being created, then passed in.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![38]), 148),
             Set(Key(vec![176]), 175),
@@ -1462,7 +1488,6 @@ fn tree_bug_11() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1471,7 +1496,7 @@ fn tree_bug_11() {
 fn tree_bug_12() {
     // postmortem: was not checking that a log entry's LSN matches its position
     // as part of detecting tears / partial rewrites.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![118]), 156),
             Set(Key(vec![8]), 63),
@@ -1514,7 +1539,6 @@ fn tree_bug_12() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1524,7 +1548,7 @@ fn tree_bug_13() {
     // postmortem: failed root hoists were being improperly recovered before the
     // following free was done on their page, but we treated the written node as
     // if it were a successful completed root hoist.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![42]), 10),
             Set(Key(vec![137]), 220),
@@ -1546,7 +1570,6 @@ fn tree_bug_13() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1555,7 +1578,7 @@ fn tree_bug_13() {
 fn tree_bug_14() {
     // postmortem: after adding prefix compression, we were not
     // handling re-inserts and deletions properly
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![107]), 234),
             Set(Key(vec![7]), 245),
@@ -1568,7 +1591,6 @@ fn tree_bug_14() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1576,7 +1598,7 @@ fn tree_bug_14() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_15() {
     // postmortem: was not sorting keys properly when binary searching for them
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![102]), 165),
             Set(Key(vec![91]), 191),
@@ -1588,7 +1610,6 @@ fn tree_bug_15() {
         true,
         false,
         0,
-        0,
     );
 }
 
@@ -1596,11 +1617,10 @@ fn tree_bug_15() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_16() {
     // postmortem: the test merge function was not properly adding numbers.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![Merge(Key(vec![247]), 162), Scan(Key(vec![209]), 31)],
         false,
         false,
-        0,
         0,
     );
 }
@@ -1611,14 +1631,13 @@ fn tree_bug_17() {
     // postmortem: we were creating a copy of a node leaf during iteration
     // before accidentally putting it into a PinnedValue, despite the
     // fact that it was not actually part of the node's actual memory!
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![194, 215, 103, 0, 138, 11, 248, 131]), 70),
             Scan(Key(vec![]), 30),
         ],
         false,
         false,
-        0,
         0,
     );
 }
@@ -1628,7 +1647,7 @@ fn tree_bug_17() {
 fn tree_bug_18() {
     // postmortem: when implementing get_gt and get_lt, there were some
     // issues with getting order comparisons correct.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![]), 19),
             Set(Key(vec![78]), 98),
@@ -1640,7 +1659,6 @@ fn tree_bug_18() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -1649,7 +1667,7 @@ fn tree_bug_18() {
 fn tree_bug_19() {
     // postmortem: we were not seeking properly to the next node
     // when we hit a half-split child and were using get_lt
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![]), 138),
             Set(Key(vec![68]), 113),
@@ -1661,7 +1679,6 @@ fn tree_bug_19() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -1671,7 +1688,7 @@ fn tree_bug_20() {
     // postmortem: we were not seeking forward during get_gt
     // if path_for_key reached a leaf that didn't include
     // a key for our
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![]), 10),
             Set(Key(vec![56]), 42),
@@ -1682,7 +1699,6 @@ fn tree_bug_20() {
         ],
         false,
         false,
-        0,
         0,
     );
 }
@@ -1695,7 +1711,7 @@ fn tree_bug_21() {
     // being empty in the view predecessor function
     // postmortem 3: when rewriting Iter, failed to account for
     // direction of iteration
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![176]), 163),
             Set(Key(vec![]), 229),
@@ -1706,7 +1722,6 @@ fn tree_bug_21() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -1716,7 +1731,7 @@ fn tree_bug_22() {
     // postmortem: inclusivity wasn't being properly flipped off after
     // the first result during iteration
     // postmortem 2: failed to properly check bounds while iterating
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Merge(Key(vec![]), 155),
             Merge(Key(vec![56]), 251),
@@ -1725,7 +1740,6 @@ fn tree_bug_22() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -1733,11 +1747,10 @@ fn tree_bug_22() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_23() {
     // postmortem: when rewriting CRC handling code, miss-sized the blob crc
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![Set(Key(vec![6; 5120]), 92), Restart, Scan(Key(vec![]), 35)],
         false,
         false,
-        0,
         0,
     );
 }
@@ -1746,7 +1759,7 @@ fn tree_bug_23() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_24() {
     // postmortem: get_gt diverged with the Iter impl
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Merge(Key(vec![]), 193),
             Del(Key(vec![])),
@@ -1764,7 +1777,6 @@ fn tree_bug_24() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -1773,11 +1785,10 @@ fn tree_bug_24() {
 fn tree_bug_25() {
     // postmortem: was not accounting for merges when traversing
     // the frag chain and a Del was encountered
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![Del(Key(vec![])), Merge(Key(vec![]), 84), Get(Key(vec![]))],
         false,
         false,
-        0,
         0,
     );
 }
@@ -1786,7 +1797,7 @@ fn tree_bug_25() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_26() {
     // postmortem:
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Merge(Key(vec![]), 194),
             Merge(Key(vec![62]), 114),
@@ -1804,7 +1815,6 @@ fn tree_bug_26() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -1813,7 +1823,7 @@ fn tree_bug_26() {
 fn tree_bug_27() {
     // postmortem: was not accounting for the fact that deletions reduce the
     // chances of being able to split successfully.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Del(Key(vec![])),
             Merge(
@@ -1876,7 +1886,6 @@ fn tree_bug_27() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -1884,7 +1893,7 @@ fn tree_bug_27() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_28() {
     // postmortem:
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Del(Key(vec![])),
             Set(Key(vec![]), 65),
@@ -1901,7 +1910,6 @@ fn tree_bug_28() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -1910,7 +1918,7 @@ fn tree_bug_28() {
 fn tree_bug_29() {
     // postmortem: tree merge and split thresholds caused an infinite
     // loop while performing updates
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![]), 142),
             Merge(
@@ -2044,7 +2052,6 @@ fn tree_bug_29() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2052,7 +2059,7 @@ fn tree_bug_29() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_30() {
     // postmortem:
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Merge(Key(vec![]), 241),
             Set(Key(vec![20]), 146),
@@ -2085,7 +2092,6 @@ fn tree_bug_30() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2093,7 +2099,7 @@ fn tree_bug_30() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_31() {
     // postmortem:
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![1]), 212),
             Set(Key(vec![12]), 174),
@@ -2110,7 +2116,6 @@ fn tree_bug_31() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2120,11 +2125,10 @@ fn tree_bug_32() {
     // postmortem: the MAX_IVEC that predecessor used in reverse
     // iteration was setting the first byte to 0 even though we
     // no longer perform per-key prefix encoding.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![Set(Key(vec![57]), 141), Scan(Key(vec![]), -40)],
         false,
         false,
-        0,
         0,
     );
 }
@@ -2134,7 +2138,7 @@ fn tree_bug_32() {
 fn tree_bug_33() {
     // postmortem: the split point was being incorrectly
     // calculated when using the simplified prefix technique.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![]), 91),
             Set(Key(vec![1]), 216),
@@ -2145,7 +2149,6 @@ fn tree_bug_33() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2155,7 +2158,7 @@ fn tree_bug_34() {
     // postmortem: a safety check was too aggressive when
     // finding predecessors using the new simplified prefix
     // encoding technique.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![9, 212]), 100),
             Set(Key(vec![9]), 63),
@@ -2167,7 +2170,6 @@ fn tree_bug_34() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2176,7 +2178,7 @@ fn tree_bug_34() {
 fn tree_bug_35() {
     // postmortem: prefix lengths were being incorrectly
     // handled on splits.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![207]), 29),
             Set(Key(vec![192]), 218),
@@ -2204,7 +2206,6 @@ fn tree_bug_35() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2215,7 +2216,7 @@ fn tree_bug_36() {
     // regions to be permanently inaccessible
     // when applied to split points on index
     // nodes.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![152]), 65),
             Set(Key(vec![]), 227),
@@ -2227,7 +2228,6 @@ fn tree_bug_36() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2237,7 +2237,7 @@ fn tree_bug_37() {
     // postmortem: suffix truncation was so
     // aggressive that it would cut into
     // the prefix in the lo key sometimes.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![]), 82),
             Set(Key(vec![2, 0]), 40),
@@ -2248,7 +2248,6 @@ fn tree_bug_37() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2258,7 +2257,7 @@ fn tree_bug_38() {
     // postmortem: Free pages were not being initialized in the
     // pagecache properly.
     for _ in 0..10 {
-        prop_tree_matches_btreemap(
+        prop_tree_matches_btreemap::<256>(
             vec![
                 Set(Key(vec![193]), 73),
                 Merge(Key(vec![117]), 216),
@@ -2269,7 +2268,6 @@ fn tree_bug_38() {
             false,
             false,
             0,
-            0,
         );
     }
 }
@@ -2279,7 +2277,7 @@ fn tree_bug_38() {
 fn tree_bug_39() {
     // postmortem:
     for _ in 0..100 {
-        prop_tree_matches_btreemap(
+        prop_tree_matches_btreemap::<256>(
             vec![
                 Set(
                     Key(vec![
@@ -2535,7 +2533,6 @@ fn tree_bug_39() {
             false,
             false,
             0,
-            0,
         );
     }
 }
@@ -2545,11 +2542,10 @@ fn tree_bug_39() {
 fn tree_bug_40() {
     // postmortem: deletions of non-existent keys were
     // being persisted despite being unnecessary.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![Del(Key(vec![99; 111222333]))],
         false,
         false,
-        0,
         0,
     );
 }
@@ -2559,7 +2555,7 @@ fn tree_bug_40() {
 fn tree_bug_41() {
     // postmortem: indexing of values during
     // iteration was incorrect.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![]), 131),
             Set(Key(vec![17; 1]), 214),
@@ -2571,7 +2567,6 @@ fn tree_bug_41() {
         false,
         false,
         0,
-        0,
     );
 }
 
@@ -2581,7 +2576,7 @@ fn tree_bug_42() {
     // postmortem: during refactoring, accidentally
     // messed up the index selection for merge destinations.
     for _ in 0..100 {
-        prop_tree_matches_btreemap(
+        prop_tree_matches_btreemap::<256>(
             vec![
                 Merge(Key(vec![]), 112),
                 Set(Key(vec![110; 1]), 153),
@@ -2591,7 +2586,6 @@ fn tree_bug_42() {
             ],
             false,
             false,
-            0,
             0,
         );
     }
@@ -2607,7 +2601,7 @@ fn tree_bug_43() {
     // Arbitrary implementation would ensure that at least
     // one frag was present, which was the invariant before
     // the base was extracted away from the vec of frags.
-    prop_tree_matches_btreemap(
+    prop_tree_matches_btreemap::<{ 256 << 4 }>(
         vec![
             Set(Key(vec![241; 1]), 199),
             Set(Key(vec![]), 198),
@@ -2619,7 +2613,6 @@ fn tree_bug_43() {
         false,
         false,
         0,
-        52,
     );
 }
 
@@ -2629,7 +2622,7 @@ fn tree_bug_44() {
     // postmortem: off-by-one bug related to LSN recovery
     // where 1 was added to the index when the recovered
     // LSN was actually divisible by the segment size
-    assert!(prop_tree_matches_btreemap(
+    assert!(prop_tree_matches_btreemap::<256>(
         vec![
             Merge(Key(vec![]), 97),
             Merge(Key(vec![]), 41),
@@ -2646,7 +2639,6 @@ fn tree_bug_44() {
         false,
         false,
         0,
-        0,
     ))
 }
 
@@ -2657,7 +2649,7 @@ fn tree_bug_45() {
     // the possibility of a segment to be maxed out, similar
     // to bug 44.
     for _ in 0..10 {
-        assert!(prop_tree_matches_btreemap(
+        assert!(prop_tree_matches_btreemap::<{ 256 << 2 }>(
             vec![
                 Merge(Key(vec![206; 77]), 225),
                 Set(Key(vec![88; 190]), 40),
@@ -2669,8 +2661,7 @@ fn tree_bug_45() {
             ],
             false,
             true,
-            0,
-            210
+            0
         ))
     }
 }
@@ -2683,7 +2674,12 @@ fn tree_bug_46() {
     // will always write to the end of the slab to be compatible
     // with O_DIRECT.
     for _ in 0..1 {
-        assert!(prop_tree_matches_btreemap(vec![Restart], false, true, 0, 0))
+        assert!(prop_tree_matches_btreemap::<256>(
+            vec![Restart],
+            false,
+            true,
+            0
+        ))
     }
 }
 
@@ -2691,11 +2687,10 @@ fn tree_bug_46() {
 #[cfg_attr(miri, ignore)]
 fn tree_bug_47() {
     // postmortem:
-    assert!(prop_tree_matches_btreemap(
+    assert!(prop_tree_matches_btreemap::<256>(
         vec![Set(Key(vec![88; 1]), 40), Restart, Get(Key(vec![88; 1]))],
         false,
         false,
-        0,
         0
     ))
 }
@@ -2706,7 +2701,7 @@ fn tree_bug_48() {
     // postmortem: node value buffer calculations were failing to
     // account for potential padding added to avoid buffer overreads
     // while looking up offsets.
-    assert!(prop_tree_matches_btreemap(
+    assert!(prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![23; 1]), 78),
             Set(Key(vec![120; 1]), 223),
@@ -2718,7 +2713,6 @@ fn tree_bug_48() {
         ],
         false,
         false,
-        0,
         0
     ))
 }
@@ -2730,7 +2724,7 @@ fn tree_bug_49() {
     // for a node with omitted keys, where the distance == the stride, and
     // as a result we went into an infinite loop trying to apply a parent
     // split that was already present
-    assert!(prop_tree_matches_btreemap(
+    assert!(prop_tree_matches_btreemap::<256>(
         vec![
             Set(Key(vec![39; 1]), 245),
             Set(Key(vec![108; 1]), 96),
@@ -2754,6 +2748,5 @@ fn tree_bug_49() {
         false,
         false,
         0,
-        0
     ))
 }

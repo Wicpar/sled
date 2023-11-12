@@ -1,10 +1,11 @@
 use super::*;
+use crate::config::const_config::ConstConfig;
 
 #[derive(Debug, Clone)]
 #[doc(hidden)]
-pub struct Context {
+pub struct Context<C: ConstConfig> {
     // TODO file from config should be in here
-    config: RunningConfig,
+    config: RunningConfig<C>,
     /// Periodically flushes dirty data. We keep this in an
     /// Arc separate from the PageCache below to separate
     /// "high-level" references from Db, Tree etc... from
@@ -15,19 +16,19 @@ pub struct Context {
     #[cfg(not(miri))]
     pub(crate) flusher: Arc<Mutex<Option<flusher::Flusher>>>,
     #[doc(hidden)]
-    pub pagecache: PageCache,
+    pub pagecache: PageCache<C>,
 }
 
-impl std::ops::Deref for Context {
-    type Target = RunningConfig;
+impl<C: ConstConfig> std::ops::Deref for Context<C> {
+    type Target = RunningConfig<C>;
 
-    fn deref(&self) -> &RunningConfig {
+    fn deref(&self) -> &RunningConfig<C> {
         &self.config
     }
 }
 
-impl Context {
-    pub(crate) fn start(config: RunningConfig) -> Result<Self> {
+impl<C: ConstConfig> Context<C> {
+    pub(crate) fn start(config: RunningConfig<C>) -> Result<Self> {
         trace!("starting context");
 
         let pagecache = PageCache::start(config.clone())?;
@@ -67,7 +68,10 @@ impl Context {
         self.pagecache.generate_id_inner()
     }
 
-    pub(crate) fn pin_log(&self, guard: &Guard) -> Result<RecoveryGuard<'_>> {
+    pub(crate) fn pin_log(
+        &self,
+        guard: &Guard,
+    ) -> Result<RecoveryGuard<'_, C>> {
         self.pagecache.pin_log(guard)
     }
 }

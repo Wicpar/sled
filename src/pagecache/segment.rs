@@ -60,8 +60,8 @@ use std::{collections::BTreeSet, mem};
 
 use super::PageState;
 
+use crate::config::const_config::ConstConfig;
 use crate::pagecache::*;
-use crate::*;
 
 /// A operation that can be applied asynchronously.
 #[derive(Debug)]
@@ -81,9 +81,9 @@ pub(crate) enum SegmentOp {
 /// of storage. It scans through all segments quickly during
 /// recovery and attempts to locate torn segments.
 #[derive(Debug)]
-pub(crate) struct SegmentAccountant {
+pub(crate) struct SegmentAccountant<C: ConstConfig> {
     // static or one-time set
-    config: RunningConfig,
+    config: RunningConfig<C>,
 
     // TODO these should be sharded to improve performance
     segments: Vec<Segment>,
@@ -236,10 +236,10 @@ impl Segment {
     /// Transitions a segment to being in the `Inactive` state.
     /// Returns the set of page replacements that happened
     /// while this Segment was Active
-    fn active_to_inactive(
+    fn active_to_inactive<C: ConstConfig>(
         &mut self,
         lsn: Lsn,
-        config: &RunningConfig,
+        config: &RunningConfig<C>,
     ) -> FastSet8<Lsn> {
         trace!("setting Segment with lsn {:?} to Inactive", self.lsn());
 
@@ -418,7 +418,11 @@ impl Segment {
         }
     }
 
-    fn remove_heap_item(&mut self, heap_id: HeapId, config: &RunningConfig) {
+    fn remove_heap_item<C: ConstConfig>(
+        &mut self,
+        heap_id: HeapId,
+        config: &RunningConfig<C>,
+    ) {
         match self {
             Segment::Active(active) => {
                 // we have received a removal before
@@ -450,10 +454,10 @@ impl Segment {
     }
 }
 
-impl SegmentAccountant {
+impl<C: ConstConfig> SegmentAccountant<C> {
     /// Create a new `SegmentAccountant` from previously recovered segments.
     pub(super) fn start(
-        config: RunningConfig,
+        config: RunningConfig<C>,
         snapshot: &Snapshot,
         segment_cleaner: SegmentCleaner,
     ) -> Result<Self> {
@@ -504,7 +508,7 @@ impl SegmentAccountant {
             // the first stabilizing thread to need
             // to cope with a huge amount of segments.
             ret.stabilize(
-                stable_lsn - Lsn::try_from(ret.config.segment_size).unwrap(),
+                stable_lsn - Lsn::try_from(C::Segment::SIZE).unwrap(),
                 true,
             )?;
         }
@@ -513,7 +517,7 @@ impl SegmentAccountant {
     }
 
     fn initial_segments(&self, snapshot: &Snapshot) -> Result<Vec<Segment>> {
-        let segment_size = self.config.segment_size;
+        let segment_size = C::Segment::SIZE;
         let file_len = self.config.file.metadata()?.len();
         let number_of_segments =
             usize::try_from(file_len / segment_size as u64).unwrap()
@@ -591,7 +595,7 @@ impl SegmentAccountant {
     }
 
     fn initialize_from_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        let segment_size = self.config.segment_size;
+        let segment_size = C::Segment::SIZE;
         let segments = self.initial_segments(snapshot)?;
 
         self.segments = segments;
@@ -636,7 +640,8 @@ impl SegmentAccountant {
             io_fail!(self.config, "zero garbage segment SA");
             pwrite_all(
                 &self.config.file,
-                &*vec![MessageKind::Corrupted.into(); self.config.segment_size],
+                // TODO: see if it doesn't explode memory use and exec size
+                &C::Segment::new_fill(MessageKind::Corrupted.into()),
                 segment_base,
             )?;
         }
@@ -707,7 +712,7 @@ impl SegmentAccountant {
 
         // truncate if possible
         while self.tip != 0 && self.free.len() > laziness_factor {
-            let last_segment = self.tip - self.config.segment_size as LogOffset;
+            let last_segment = self.tip - C::Segment::SIZE as LogOffset;
             if self.free.contains(&last_segment) {
                 self.free.remove(&last_segment);
                 self.truncate(last_segment)?;
@@ -840,8 +845,8 @@ impl SegmentAccountant {
 
         let segment = &mut self.segments[idx];
 
-        let segment_lsn = cache_info.lsn / self.config.segment_size as Lsn
-            * self.config.segment_size as Lsn;
+        let segment_lsn =
+            cache_info.lsn / C::Segment::SIZE as Lsn * C::Segment::SIZE as Lsn;
 
         // a race happened, and our Lsn does not apply anymore
         assert_eq!(
@@ -861,7 +866,7 @@ impl SegmentAccountant {
         idx: usize,
         lsn: Lsn,
     ) -> Result<()> {
-        let segment_start = (idx * self.config.segment_size) as LogOffset;
+        let segment_start = (idx * C::Segment::SIZE) as LogOffset;
 
         if let Segment::Inactive(inactive) = &mut self.segments[idx] {
             let live_pct = (inactive.max_pids - inactive.replaced_pids) * 50
@@ -888,10 +893,9 @@ impl SegmentAccountant {
 
             if self.ordering.contains_key(&replacement_lsn) {
                 let replacement_lid = self.ordering[&replacement_lsn];
-                let replacement_idx = usize::try_from(
-                    replacement_lid / self.config.segment_size as u64,
-                )
-                .unwrap();
+                let replacement_idx =
+                    usize::try_from(replacement_lid / C::Segment::SIZE as u64)
+                        .unwrap();
 
                 if self.segments[replacement_idx].is_active() {
                     trace!(
@@ -921,7 +925,7 @@ impl SegmentAccountant {
         #[cfg(feature = "metrics")]
         let _measure = Measure::new(&M.accountant_stabilize);
 
-        let segment_size = self.config.segment_size as Lsn;
+        let segment_size = C::Segment::SIZE as Lsn;
         let lsn = ((stable_lsn / segment_size) - 1) * segment_size;
         trace!(
             "stabilize({}), normalized: {}, last: {}",
@@ -978,7 +982,7 @@ impl SegmentAccountant {
                 self.segments.iter().rposition(Segment::is_inactive)
             {
                 let segment_start =
-                    (last_index * self.config.segment_size) as LogOffset;
+                    (last_index * C::Segment::SIZE) as LogOffset;
 
                 let to_clean =
                     self.segments[last_index].inactive_to_draining(lsn);
@@ -1038,7 +1042,7 @@ impl SegmentAccountant {
             }
         }
 
-        self.tip += self.config.segment_size as LogOffset;
+        self.tip += C::Segment::SIZE as LogOffset;
 
         trace!("advancing file tip from {} to {}", lid, self.tip);
 
@@ -1054,7 +1058,7 @@ impl SegmentAccountant {
         let _measure = Measure::new(&M.accountant_next);
 
         assert_eq!(
-            lsn % self.config.segment_size as Lsn,
+            lsn % C::Segment::SIZE as Lsn,
             0,
             "unaligned Lsn provided to next!"
         );
@@ -1130,7 +1134,7 @@ impl SegmentAccountant {
         trace!("asynchronously truncating file to length {}", at);
 
         assert_eq!(
-            at % self.config.segment_size as LogOffset,
+            at % C::Segment::SIZE as LogOffset,
             0,
             "new length must be io-buf-len aligned"
         );
@@ -1156,7 +1160,7 @@ impl SegmentAccountant {
     }
 
     fn segment_id(&mut self, lid: LogOffset) -> usize {
-        let idx = assert_usize(lid / self.config.segment_size as LogOffset);
+        let idx = assert_usize(lid / C::Segment::SIZE as LogOffset);
 
         // TODO never resize like this, make it a single
         // responsibility when the tip is bumped / truncated.
