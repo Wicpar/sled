@@ -50,7 +50,7 @@ fn sled_bulk_load(c: &mut Criterion) {
     };
 
     let mut bench = |key_len, val_len| {
-        let db = Config::new()
+        let db = <Config>::builder()
             .path(format!("bulk_k{}_v{}", key_len, val_len))
             .temporary(true)
             .flush_every_ms(None)
@@ -75,7 +75,11 @@ fn sled_bulk_load(c: &mut Criterion) {
 }
 
 fn sled_monotonic_crud(c: &mut Criterion) {
-    let db = Config::new().temporary(true).flush_every_ms(None).open().unwrap();
+    let db = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(None)
+        .open()
+        .unwrap();
 
     c.bench_function("monotonic inserts", |b| {
         let mut count = 0_u32;
@@ -105,7 +109,11 @@ fn sled_monotonic_crud(c: &mut Criterion) {
 fn sled_random_crud(c: &mut Criterion) {
     const SIZE: u32 = 65536;
 
-    let db = Config::new().temporary(true).flush_every_ms(None).open().unwrap();
+    let db = <Config>::builder()
+        .temporary(true)
+        .flush_every_ms(None)
+        .open()
+        .unwrap();
 
     c.bench_function("random inserts", |b| {
         b.iter(|| {
@@ -133,7 +141,7 @@ fn sled_empty_opens(c: &mut Criterion) {
     let _ = std::fs::remove_dir_all("empty_opens");
     c.bench_function("empty opens", |b| {
         b.iter(|| {
-            Config::new()
+            <Config>::builder()
                 .path(format!("empty_opens/{}.db", counter()))
                 .flush_every_ms(None)
                 .open()
